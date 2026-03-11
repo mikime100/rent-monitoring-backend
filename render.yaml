@@ -43,7 +43,7 @@ services:
           name: rent-monitoring-db
           property: database
       - key: DB_SYNCHRONIZE
-        value: "false"
+        value: "true"
       - key: DB_LOGGING
         value: "false"
       - key: DB_SSL
