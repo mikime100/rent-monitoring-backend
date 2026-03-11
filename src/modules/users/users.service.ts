@@ -1,0 +1,204 @@
+/**
+ * Users Service
+ */
+
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  ConflictException,
+} from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import * as bcrypt from "bcrypt";
+import { User, UserRole, Property } from "../../entities";
+import { CreateUserDto } from "./dto/create-user.dto";
+import { UpdateUserDto } from "./dto/update-user.dto";
+
+@Injectable()
+export class UsersService {
+  constructor(
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
+  ) {}
+
+  /**
+   * Create a new staff member (General Manager only)
+   */
+  async createStaff(dto: CreateUserDto, managerId: string): Promise<User> {
+    const existingUser = await this.userRepository.findOne({
+      where: [{ email: dto.email }, { phone: dto.phone }],
+    });
+
+    if (existingUser) {
+      throw new ConflictException(
+        "User with this email or phone already exists",
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+
+    const staffMember = this.userRepository.create({
+      ...dto,
+      password: hashedPassword,
+      role: UserRole.STAFF,
+      managerId,
+      isActive: true,
+    });
+
+    const saved = await this.userRepository.save(staffMember);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Get all staff for manager
+   */
+  async findStaffByManager(managerId: string): Promise<User[]> {
+    const staff = await this.userRepository.find({
+      where: { managerId, role: UserRole.STAFF },
+    });
+    return staff;
+  }
+
+  /**
+   * Get ALL staff users (Owner view)
+   */
+  async findAllStaff(): Promise<User[]> {
+    const staff = await this.userRepository.find({
+      where: { role: UserRole.STAFF },
+    });
+    return staff;
+  }
+
+  /**
+   * Get user by ID
+   */
+  async findById(id: string, managerId?: string): Promise<User> {
+    const whereClause: Record<string, any> = { id };
+    if (managerId) {
+      whereClause["managerId"] = managerId;
+    }
+
+    const user = await this.userRepository.findOne({
+      where: whereClause,
+      select: [
+        "id",
+        "email",
+        "phone",
+        "firstName",
+        "lastName",
+        "role",
+        "isActive",
+        "createdAt",
+      ],
+      relations: ["assignedProperties"],
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    return user;
+  }
+
+  /**
+   * Update staff member
+   */
+  async updateStaff(
+    id: string,
+    dto: UpdateUserDto,
+    managerId: string,
+  ): Promise<User> {
+    const staff = await this.userRepository.findOne({
+      where: { id, managerId, role: UserRole.STAFF },
+    });
+
+    if (!staff) {
+      throw new NotFoundException("Staff member not found");
+    }
+
+    if (dto.password) {
+      dto.password = await bcrypt.hash(dto.password, 12);
+    }
+
+    Object.assign(staff, dto);
+    const saved = await this.userRepository.save(staff);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Deactivate staff member
+   */
+  async deactivateStaff(id: string, managerId: string): Promise<User> {
+    const staff = await this.userRepository.findOne({
+      where: { id, managerId, role: UserRole.STAFF },
+    });
+
+    if (!staff) {
+      throw new NotFoundException("Staff member not found");
+    }
+
+    staff.isActive = false;
+    const saved = await this.userRepository.save(staff);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Activate staff member
+   */
+  async activateStaff(id: string, managerId: string): Promise<User> {
+    const staff = await this.userRepository.findOne({
+      where: { id, managerId, role: UserRole.STAFF },
+    });
+
+    if (!staff) {
+      throw new NotFoundException("Staff member not found");
+    }
+
+    staff.isActive = true;
+    const saved = await this.userRepository.save(staff);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Get staff statistics
+   */
+  async getStaffStats(staffId: string, managerId: string): Promise<any> {
+    const staff = await this.userRepository.findOne({
+      where: { id: staffId, managerId },
+      relations: ["assignedProperties", "assignedProperties.tenants"],
+    });
+
+    if (!staff) {
+      throw new NotFoundException("Staff member not found");
+    }
+
+    const propertyCount = staff.assignedProperties?.length ?? 0;
+    const tenantCount =
+      staff.assignedProperties?.reduce(
+        (sum, p) => sum + (p.tenants?.length ?? 0),
+        0,
+      ) ?? 0;
+
+    return {
+      staffId,
+      propertyCount,
+      tenantCount,
+    };
+  }
+
+  /**
+   * Find user by email (for auth)
+   */
+  async findByEmail(email: string): Promise<User | null> {
+    return this.userRepository.findOne({
+      where: { email },
+    });
+  }
+}

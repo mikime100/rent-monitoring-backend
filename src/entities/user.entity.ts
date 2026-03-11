@@ -1,0 +1,80 @@
+/**
+ * User Entity
+ */
+
+import {
+  Entity,
+  Column,
+  ManyToOne,
+  OneToMany,
+  ManyToMany,
+  JoinColumn,
+  Index,
+} from "typeorm";
+import { Exclude } from "class-transformer";
+import { BaseEntity } from "./base.entity";
+import { Property } from "./property.entity";
+
+export enum UserRole {
+  OWNER = "owner",
+  GENERAL_MANAGER = "general_manager",
+  STAFF = "staff",
+}
+
+@Entity("users")
+export class User extends BaseEntity {
+  @Index()
+  @Column({ unique: true })
+  email: string;
+
+  @Column({ name: "first_name" })
+  firstName: string;
+
+  @Column({ name: "last_name" })
+  lastName: string;
+
+  @Exclude()
+  @Column()
+  password: string;
+
+  @Column({
+    type: "enum",
+    enum: UserRole,
+    default: UserRole.STAFF,
+  })
+  role: UserRole;
+
+  @Column({ nullable: true })
+  phone?: string;
+
+  @Column({ name: "is_active", default: true })
+  isActive: boolean;
+
+  @Column({ name: "manager_id", nullable: true })
+  managerId?: string;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: "manager_id" })
+  manager?: User;
+
+  @OneToMany(() => User, (user) => user.manager)
+  staff?: User[];
+
+  @ManyToMany(() => Property, (property) => property.assignedStaff)
+  assignedProperties?: Property[];
+
+  @Column({ name: "fcm_token", nullable: true })
+  fcmToken?: string;
+
+  @Column({ name: "refresh_token", nullable: true })
+  @Exclude()
+  refreshToken?: string;
+
+  @Column({ name: "last_login_at", nullable: true })
+  lastLoginAt?: Date;
+
+  // Virtual property
+  get fullName(): string {
+    return `${this.firstName} ${this.lastName}`;
+  }
+}

@@ -1,0 +1,58 @@
+databases:
+  - name: rent-monitoring-db
+    plan: free
+    databaseName: rent_monitoring
+    user: rent_monitoring_user
+
+services:
+  - type: web
+    name: rent-monitoring-backend
+    env: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      - key: DB_HOST
+        fromDatabase:
+          name: rent-monitoring-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: rent-monitoring-db
+          property: port
+      - key: DB_USERNAME
+        fromDatabase:
+          name: rent-monitoring-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: rent-monitoring-db
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: rent-monitoring-db
+          property: database
+      - key: DB_SYNCHRONIZE
+        value: "false"
+      - key: DB_LOGGING
+        value: "false"
+      - key: DB_SSL
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: CORS_ORIGINS
+        value: "*"
