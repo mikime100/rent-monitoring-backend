@@ -201,4 +201,105 @@ export class UsersService {
       where: { email },
     });
   }
+
+  // ── General Manager management (Owner) ──
+
+  /**
+   * Create a new General Manager (Owner only)
+   */
+  async createManager(dto: CreateUserDto): Promise<User> {
+    const existingUser = await this.userRepository.findOne({
+      where: [{ email: dto.email }, { phone: dto.phone }],
+    });
+
+    if (existingUser) {
+      throw new ConflictException(
+        "User with this email or phone already exists",
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+
+    const manager = this.userRepository.create({
+      ...dto,
+      email: dto.email.toLowerCase(),
+      password: hashedPassword,
+      role: UserRole.GENERAL_MANAGER,
+      isActive: true,
+    });
+
+    const saved = await this.userRepository.save(manager);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Get ALL general managers (Owner view)
+   */
+  async findAllManagers(): Promise<User[]> {
+    const managers = await this.userRepository.find({
+      where: { role: UserRole.GENERAL_MANAGER },
+      order: { createdAt: "DESC" },
+    });
+    managers.forEach((m) => delete (m as any).password);
+    return managers;
+  }
+
+  /**
+   * Update general manager
+   */
+  async updateManager(id: string, dto: UpdateUserDto): Promise<User> {
+    const manager = await this.userRepository.findOne({
+      where: { id, role: UserRole.GENERAL_MANAGER },
+    });
+
+    if (!manager) {
+      throw new NotFoundException("General manager not found");
+    }
+
+    if (dto.password) {
+      dto.password = await bcrypt.hash(dto.password, 12);
+    }
+
+    Object.assign(manager, dto);
+    const saved = await this.userRepository.save(manager);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Deactivate general manager
+   */
+  async deactivateManager(id: string): Promise<User> {
+    const manager = await this.userRepository.findOne({
+      where: { id, role: UserRole.GENERAL_MANAGER },
+    });
+
+    if (!manager) {
+      throw new NotFoundException("General manager not found");
+    }
+
+    manager.isActive = false;
+    const saved = await this.userRepository.save(manager);
+    delete (saved as any).password;
+    return saved;
+  }
+
+  /**
+   * Activate general manager
+   */
+  async activateManager(id: string): Promise<User> {
+    const manager = await this.userRepository.findOne({
+      where: { id, role: UserRole.GENERAL_MANAGER },
+    });
+
+    if (!manager) {
+      throw new NotFoundException("General manager not found");
+    }
+
+    manager.isActive = true;
+    const saved = await this.userRepository.save(manager);
+    delete (saved as any).password;
+    return saved;
+  }
 }

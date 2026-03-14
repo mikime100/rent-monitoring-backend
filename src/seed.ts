@@ -20,6 +20,7 @@ const AppDataSource = new DataSource({
   database: process.env.DB_NAME ?? "rent_monitoring",
   synchronize: false,
   logging: false,
+  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
   entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
 });
 
@@ -503,28 +504,60 @@ async function seed() {
     console.log("Seeding complaints...");
     const complaint1Id = uuidv4();
     const complaint2Id = uuidv4();
+    const complaint3Id = uuidv4();
+    const complaint4Id = uuidv4();
     await qr.query(
-      `INSERT INTO "complaints" (id, staff_id, title, description, status, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'open',$5,$5)`,
+      `INSERT INTO "complaints" (id, staff_id, property_id, title, description, category, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$7)`,
       [
         complaint1Id,
         staff1Id,
+        prop1Id,
         "Broken water pipe in Block A",
         "There is a leaking pipe in the ground floor corridor of Block A that needs urgent repair.",
+        "plumbing",
         nowISO,
       ],
     );
     await qr.query(
-      `INSERT INTO "complaints" (id, staff_id, title, description, status, response, responded_by_id, responded_at, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'resolved',$5,$6,$7,$8,$8)`,
+      `INSERT INTO "complaints" (id, staff_id, property_id, title, description, category, status, response, responded_by_id, responded_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'resolved',$7,$8,$9,$10,$10)`,
       [
         complaint2Id,
         staff2Id,
+        prop2Id,
         "Security light not working",
         "The security light at the main gate of Green Valley Complex has been off for 3 days.",
+        "electrical",
         "Electrician has been dispatched and the light has been fixed.",
         gmId,
         nowISO,
+        nowISO,
+      ],
+    );
+    await qr.query(
+      `INSERT INTO "complaints" (id, staff_id, property_id, title, description, category, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'in_progress',$7,$7)`,
+      [
+        complaint3Id,
+        staff1Id,
+        prop1Id,
+        "Elevator maintenance required",
+        "The elevator in building 2 is making unusual noises and needs professional inspection.",
+        "structural",
+        nowISO,
+      ],
+    );
+    await qr.query(
+      `INSERT INTO "complaints" (id, staff_id, property_id, title, description, category, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$7)`,
+      [
+        complaint4Id,
+        staff2Id,
+        prop2Id,
+        "Pest control needed",
+        "Multiple tenants have reported seeing cockroaches in the common areas of the building.",
+        "pest",
         nowISO,
       ],
     );
@@ -650,7 +683,7 @@ async function seed() {
       `    ${paidMonths.length * tenants.length + tenants.length} payments (${paidMonths.length} months paid + current month mixed)`,
     );
     console.log(`    ${notifications.length + 1} notifications`);
-    console.log("    2 complaints (1 open, 1 resolved)");
+    console.log("    4 complaints (2 per property: plumbing, electrical, structural, pest)");
     console.log(`    ${taxSchedules.length} tax schedules (monthly, quarterly, annually)`);
     console.log(`\n  Current month: ${curMonth}/${curYear}`);
     console.log(`    Paid: 4 | Pending: 2 | Overdue: 2\n`);

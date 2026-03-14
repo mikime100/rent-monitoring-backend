@@ -103,4 +103,54 @@ export class UsersController {
   getProfile(@Request() req: any) {
     return this.usersService.findById(req.user.sub);
   }
+
+  // ── General Manager management (Owner only) ──
+
+  /**
+   * Create new general manager (Owner only)
+   */
+  @Post("managers")
+  @Roles(UserRole.OWNER)
+  createManager(@Body() dto: CreateUserDto) {
+    return this.usersService.createManager(dto);
+  }
+
+  /**
+   * Get all general managers (Owner only)
+   */
+  @Get("managers")
+  @Roles(UserRole.OWNER)
+  findManagers() {
+    return this.usersService.findAllManagers();
+  }
+
+  /**
+   * Update general manager (Owner only)
+   */
+  @Patch("managers/:id")
+  @Roles(UserRole.OWNER)
+  updateManager(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateUserDto,
+  ) {
+    return this.usersService.updateManager(id, dto);
+  }
+
+  /**
+   * Deactivate general manager (Owner only)
+   */
+  @Patch("managers/:id/deactivate")
+  @Roles(UserRole.OWNER)
+  deactivateManager(@Param("id", ParseUUIDPipe) id: string) {
+    return this.usersService.deactivateManager(id);
+  }
+
+  /**
+   * Activate general manager (Owner only)
+   */
+  @Patch("managers/:id/activate")
+  @Roles(UserRole.OWNER)
+  activateManager(@Param("id", ParseUUIDPipe) id: string) {
+    return this.usersService.activateManager(id);
+  }
 }
