@@ -40,18 +40,17 @@ export class TenantsService {
       throw new NotFoundException("Property not found");
     }
 
-    if (userRole === UserRole.STAFF) {
-      const hasAccess = property.assignedStaff?.some((w) => w.id === userId);
-      if (!hasAccess) {
-        throw new ForbiddenException("Access denied to this property");
-      }
+    if (
+      userRole === UserRole.GENERAL_MANAGER &&
+      property.managerId !== userId
+    ) {
+      throw new ForbiddenException("Access denied to this property");
     }
 
     const tenant = this.tenantRepository.create({
       ...dto,
       status: TenantStatus.ACTIVE,
-      assignedStaffId:
-        userRole === UserRole.STAFF ? userId : dto.assignedStaffId,
+      assignedStaffId: dto.assignedStaffId,
     });
 
     return this.tenantRepository.save(tenant);
@@ -63,7 +62,7 @@ export class TenantsService {
   async findAll(
     userId: string,
     userRole: UserRole,
-    managerId?: string,
+    _managerId?: string,
   ): Promise<Tenant[]> {
     if (userRole === UserRole.OWNER) {
       // Owner sees ALL tenants across all properties
@@ -71,7 +70,9 @@ export class TenantsService {
         relations: ["property"],
         order: { createdAt: "DESC" },
       });
-    } else if (userRole === UserRole.GENERAL_MANAGER) {
+    }
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
       // Manager sees all tenants in THEIR properties
       return this.tenantRepository
         .createQueryBuilder("tenant")
@@ -86,29 +87,29 @@ export class TenantsService {
         .leftJoinAndSelect("tenant.property", "prop")
         .orderBy("tenant.createdAt", "DESC")
         .getMany();
-    } else {
-      // Staff sees tenants in assigned properties or assigned to them
-      return this.tenantRepository
-        .createQueryBuilder("tenant")
-        .innerJoin("tenant.property", "property")
-        .innerJoin(
-          "property.assignedStaff",
-          "staffUser",
-          "staffUser.id = :staffId",
-          {
-            staffId: userId,
-          },
-        )
-        .leftJoinAndSelect("tenant.property", "prop")
-        .orderBy("tenant.createdAt", "DESC")
-        .getMany();
     }
+
+    throw new ForbiddenException("Only owner and general manager can view tenants");
   }
 
   /**
    * Get tenants by property
    */
-  async findByProperty(propertyId: string): Promise<Tenant[]> {
+  async findByProperty(
+    propertyId: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Tenant[]> {
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      const property = await this.propertyRepository.findOne({
+        where: { id: propertyId, managerId: userId },
+      });
+
+      if (!property) {
+        throw new ForbiddenException("Access denied to this property");
+      }
+    }
+
     return this.tenantRepository.find({
       where: { propertyId },
       relations: ["property", "assignedStaff"],
@@ -119,7 +120,11 @@ export class TenantsService {
   /**
    * Get tenant by ID
    */
-  async findById(id: string): Promise<Tenant> {
+  async findById(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Tenant> {
     const tenant = await this.tenantRepository.findOne({
       where: { id },
       relations: ["property", "assignedStaff", "payments"],
@@ -129,14 +134,29 @@ export class TenantsService {
       throw new NotFoundException("Tenant not found");
     }
 
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      if (!tenant.property || tenant.property.managerId !== userId) {
+        throw new ForbiddenException("Access denied");
+      }
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException("Only owner and general manager can access tenants");
+    }
+
     return tenant;
   }
 
   /**
    * Update tenant
    */
-  async update(id: string, dto: UpdateTenantDto): Promise<Tenant> {
-    const tenant = await this.findById(id);
+  async update(
+    id: string,
+    dto: UpdateTenantDto,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Tenant> {
+    const tenant = await this.findById(id, userId, userRole);
     Object.assign(tenant, dto);
     return this.tenantRepository.save(tenant);
   }
@@ -144,8 +164,8 @@ export class TenantsService {
   /**
    * Delete tenant (soft delete by changing status)
    */
-  async delete(id: string): Promise<void> {
-    const tenant = await this.findById(id);
+  async delete(id: string, userId: string, userRole: UserRole): Promise<void> {
+    const tenant = await this.findById(id, userId, userRole);
     tenant.status = TenantStatus.INACTIVE;
     await this.tenantRepository.save(tenant);
   }
@@ -153,30 +173,52 @@ export class TenantsService {
   /**
    * Get tenants with rent due today
    */
-  async findWithRentDueToday(): Promise<Tenant[]> {
+  async findWithRentDueToday(
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Tenant[]> {
     const today = new Date();
     const dayOfMonth = today.getDate();
 
-    return this.tenantRepository.find({
-      where: {
-        rentDueDay: dayOfMonth,
-        status: TenantStatus.ACTIVE,
-      },
-      relations: ["property"],
-    });
+    const qb = this.tenantRepository
+      .createQueryBuilder("tenant")
+      .leftJoinAndSelect("tenant.property", "property")
+      .where("tenant.rentDueDay = :dayOfMonth", { dayOfMonth })
+      .andWhere("tenant.status = :status", { status: TenantStatus.ACTIVE });
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      qb.andWhere("property.managerId = :userId", { userId });
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException("Only owner and general manager can access tenants");
+    }
+
+    return qb.getMany();
   }
 
   /**
    * Get tenants with expired contracts
    */
-  async findWithExpiredContracts(): Promise<Tenant[]> {
-    return this.tenantRepository.find({
-      where: {
-        contractEndDate: LessThan(new Date()),
-        status: TenantStatus.ACTIVE,
-      },
-      relations: ["property"],
-    });
+  async findWithExpiredContracts(
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Tenant[]> {
+    const qb = this.tenantRepository
+      .createQueryBuilder("tenant")
+      .leftJoinAndSelect("tenant.property", "property")
+      .where("tenant.contractEndDate < :today", { today: new Date() })
+      .andWhere("tenant.status = :status", { status: TenantStatus.ACTIVE });
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      qb.andWhere("property.managerId = :userId", { userId });
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException("Only owner and general manager can access tenants");
+    }
+
+    return qb.getMany();
   }
 
   /**

@@ -38,6 +38,7 @@ export class TenantsController {
   constructor(private readonly tenantsService: TenantsService) {}
 
   @Post()
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Create a new tenant" })
   async create(
     @Body() dto: CreateTenantDto,
@@ -52,6 +53,7 @@ export class TenantsController {
   }
 
   @Get()
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get all tenants" })
   async findAll(@Request() req: { user: AuthUser }) {
     const tenants = await this.tenantsService.findAll(
@@ -74,46 +76,76 @@ export class TenantsController {
   }
 
   @Get("due-today")
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get tenants with rent due today" })
-  async findWithRentDueToday() {
-    const tenants = await this.tenantsService.findWithRentDueToday();
+  async findWithRentDueToday(@Request() req: { user: AuthUser }) {
+    const tenants = await this.tenantsService.findWithRentDueToday(
+      req.user.sub,
+      req.user.role,
+    );
     return { success: true, data: tenants };
   }
 
   @Get("expired-contracts")
   @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get tenants with expired contracts" })
-  async findWithExpiredContracts() {
-    const tenants = await this.tenantsService.findWithExpiredContracts();
+  async findWithExpiredContracts(@Request() req: { user: AuthUser }) {
+    const tenants = await this.tenantsService.findWithExpiredContracts(
+      req.user.sub,
+      req.user.role,
+    );
     return { success: true, data: tenants };
   }
 
   @Get("property/:propertyId")
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get tenants by property" })
-  async findByProperty(@Param("propertyId") propertyId: string) {
-    const tenants = await this.tenantsService.findByProperty(propertyId);
+  async findByProperty(
+    @Param("propertyId") propertyId: string,
+    @Request() req: { user: AuthUser },
+  ) {
+    const tenants = await this.tenantsService.findByProperty(
+      propertyId,
+      req.user.sub,
+      req.user.role,
+    );
     return { success: true, data: tenants };
   }
 
   @Get(":id")
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get tenant by ID" })
-  async findById(@Param("id") id: string) {
-    const tenant = await this.tenantsService.findById(id);
+  async findById(@Param("id") id: string, @Request() req: { user: AuthUser }) {
+    const tenant = await this.tenantsService.findById(
+      id,
+      req.user.sub,
+      req.user.role,
+    );
     return { success: true, data: tenant };
   }
 
   @Patch(":id")
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Update tenant" })
-  async update(@Param("id") id: string, @Body() dto: UpdateTenantDto) {
-    const tenant = await this.tenantsService.update(id, dto);
+  async update(
+    @Param("id") id: string,
+    @Body() dto: UpdateTenantDto,
+    @Request() req: { user: AuthUser },
+  ) {
+    const tenant = await this.tenantsService.update(
+      id,
+      dto,
+      req.user.sub,
+      req.user.role,
+    );
     return { success: true, data: tenant };
   }
 
   @Delete(":id")
-  @Roles(UserRole.GENERAL_MANAGER)
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Delete tenant" })
-  async delete(@Param("id") id: string) {
-    await this.tenantsService.delete(id);
+  async delete(@Param("id") id: string, @Request() req: { user: AuthUser }) {
+    await this.tenantsService.delete(id, req.user.sub, req.user.role);
     return { success: true, message: "Tenant deleted" };
   }
 }

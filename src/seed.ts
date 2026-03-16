@@ -35,7 +35,7 @@ async function seed() {
     console.log("ðŸ§¹  Clearing existing data...");
     await qr.query(`DELETE FROM "tax_schedules"`).catch(() => {});
     await qr.query(`DELETE FROM "notifications"`);
-    await qr.query(`DELETE FROM "complaints"` ).catch(() => {}); // table may not exist yet
+    await qr.query(`DELETE FROM "complaints"`).catch(() => {}); // table may not exist yet
     await qr.query(`DELETE FROM "payments"`);
     await qr.query(`DELETE FROM "tenants"`);
     await qr.query(`DELETE FROM "property_staff"`);
@@ -581,12 +581,19 @@ async function seed() {
     console.log("🏛️  Seeding tax schedules...");
 
     // Calculate next due dates
-    const nextMonthlyDue = new Date(curYear, curMonth - 1 + (now.getDate() > 15 ? 1 : 0), 15);
-    if (nextMonthlyDue <= now) nextMonthlyDue.setMonth(nextMonthlyDue.getMonth() + 1);
+    const nextMonthlyDue = new Date(
+      curYear,
+      curMonth - 1 + (now.getDate() > 15 ? 1 : 0),
+      15,
+    );
+    if (nextMonthlyDue <= now)
+      nextMonthlyDue.setMonth(nextMonthlyDue.getMonth() + 1);
     const nextQuarterlyDue = new Date(curYear, Math.ceil(curMonth / 3) * 3, 1);
-    if (nextQuarterlyDue <= now) nextQuarterlyDue.setMonth(nextQuarterlyDue.getMonth() + 3);
+    if (nextQuarterlyDue <= now)
+      nextQuarterlyDue.setMonth(nextQuarterlyDue.getMonth() + 3);
     const nextAnnualDue = new Date(curYear, 5, 30); // June 30th
-    if (nextAnnualDue <= now) nextAnnualDue.setFullYear(nextAnnualDue.getFullYear() + 1);
+    if (nextAnnualDue <= now)
+      nextAnnualDue.setFullYear(nextAnnualDue.getFullYear() + 1);
 
     const taxSchedules = [
       {
@@ -683,8 +690,12 @@ async function seed() {
       `    ${paidMonths.length * tenants.length + tenants.length} payments (${paidMonths.length} months paid + current month mixed)`,
     );
     console.log(`    ${notifications.length + 1} notifications`);
-    console.log("    4 complaints (2 per property: plumbing, electrical, structural, pest)");
-    console.log(`    ${taxSchedules.length} tax schedules (monthly, quarterly, annually)`);
+    console.log(
+      "    4 complaints (2 per property: plumbing, electrical, structural, pest)",
+    );
+    console.log(
+      `    ${taxSchedules.length} tax schedules (monthly, quarterly, annually)`,
+    );
     console.log(`\n  Current month: ${curMonth}/${curYear}`);
     console.log(`    Paid: 4 | Pending: 2 | Overdue: 2\n`);
   } catch (err) {

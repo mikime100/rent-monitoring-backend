@@ -2,11 +2,15 @@
  * Payments Service
  */
 
-import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, Between, In } from "typeorm";
 import { v4 as uuidv4 } from "uuid";
-import { Payment, PaymentStatus, Tenant } from "../../entities";
+import { Payment, PaymentStatus, Tenant, UserRole } from "../../entities";
 import { CreatePaymentDto } from "./dto/create-payment.dto";
 import { UpdatePaymentDto } from "./dto/update-payment.dto";
 
@@ -29,16 +33,56 @@ export class PaymentsService {
     private readonly tenantRepository: Repository<Tenant>,
   ) {}
 
+  private applyRoleScope(
+    qb: ReturnType<Repository<Payment>["createQueryBuilder"]>,
+    userId: string,
+    userRole: UserRole,
+  ) {
+    if (userRole === UserRole.OWNER) {
+      return qb;
+    }
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      return qb
+        .innerJoin("payment.property", "scopeProperty")
+        .andWhere("scopeProperty.managerId = :scopeManagerId", {
+          scopeManagerId: userId,
+        });
+    }
+
+    throw new ForbiddenException(
+      "Only owner and general manager can access payments",
+    );
+  }
+
   /**
    * Create a new payment
    */
-  async create(dto: CreatePaymentDto, recordedById: string): Promise<Payment> {
+  async create(
+    dto: CreatePaymentDto,
+    recordedById: string,
+    userRole: UserRole,
+  ): Promise<Payment> {
     const tenant = await this.tenantRepository.findOne({
       where: { id: dto.tenantId },
+      relations: ["property"],
     });
 
     if (!tenant) {
       throw new NotFoundException("Tenant not found");
+    }
+
+    if (
+      userRole === UserRole.GENERAL_MANAGER &&
+      tenant.property?.managerId !== recordedById
+    ) {
+      throw new ForbiddenException("Access denied to tenant payment records");
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can create payments",
+      );
     }
 
     const paymentDate = new Date(dto.paymentDate);
@@ -63,39 +107,83 @@ export class PaymentsService {
   /**
    * Get all payments
    */
-  async findAll(): Promise<Payment[]> {
-    return this.paymentRepository.find({
-      relations: ["tenant", "property", "recordedBy"],
-      order: { paymentDate: "DESC" },
-    });
+  async findAll(userId: string, userRole: UserRole): Promise<Payment[]> {
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .leftJoinAndSelect("payment.recordedBy", "recordedBy")
+      .orderBy("payment.paymentDate", "DESC");
+
+    return this.applyRoleScope(qb, userId, userRole).getMany();
   }
 
   /**
    * Get payments by month/year
    */
-  async findByMonthYear(month: number, year: number): Promise<Payment[]> {
-    return this.paymentRepository.find({
-      where: { month, year },
-      relations: ["tenant", "property", "recordedBy"],
-      order: { paymentDate: "DESC" },
-    });
+  async findByMonthYear(
+    month: number,
+    year: number,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment[]> {
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .leftJoinAndSelect("payment.recordedBy", "recordedBy")
+      .where("payment.month = :month", { month })
+      .andWhere("payment.year = :year", { year })
+      .orderBy("payment.paymentDate", "DESC");
+
+    return this.applyRoleScope(qb, userId, userRole).getMany();
   }
 
   /**
    * Get payments by tenant
    */
-  async findByTenant(tenantId: string): Promise<Payment[]> {
-    return this.paymentRepository.find({
-      where: { tenantId },
-      relations: ["property", "recordedBy"],
-      order: { paymentDate: "DESC" },
-    });
+  async findByTenant(
+    tenantId: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment[]> {
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.property", "property")
+      .leftJoinAndSelect("payment.recordedBy", "recordedBy")
+      .where("payment.tenantId = :tenantId", { tenantId })
+      .orderBy("payment.paymentDate", "DESC");
+
+    return this.applyRoleScope(qb, userId, userRole).getMany();
   }
 
   /**
    * Get payments by property
    */
-  async findByProperty(propertyId: string): Promise<Payment[]> {
+  async findByProperty(
+    propertyId: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment[]> {
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      const hasPropertyAccess = await this.tenantRepository
+        .createQueryBuilder("tenant")
+        .innerJoin("tenant.property", "property")
+        .where("tenant.propertyId = :propertyId", { propertyId })
+        .andWhere("property.managerId = :managerId", { managerId: userId })
+        .getExists();
+
+      if (!hasPropertyAccess) {
+        throw new ForbiddenException("Access denied to property payments");
+      }
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can access payments",
+      );
+    }
+
     return this.paymentRepository.find({
       where: { propertyId },
       relations: ["tenant", "recordedBy"],
@@ -106,11 +194,15 @@ export class PaymentsService {
   /**
    * Get payment by ID
    */
-  async findById(id: string): Promise<Payment> {
-    const payment = await this.paymentRepository.findOne({
-      where: { id },
-      relations: ["tenant", "property", "recordedBy"],
-    });
+  async findById(id: string, userId: string, userRole: UserRole): Promise<Payment> {
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .leftJoinAndSelect("payment.recordedBy", "recordedBy")
+      .where("payment.id = :id", { id });
+
+    const payment = await this.applyRoleScope(qb, userId, userRole).getOne();
 
     if (!payment) {
       throw new NotFoundException("Payment not found");
@@ -122,8 +214,13 @@ export class PaymentsService {
   /**
    * Update payment
    */
-  async update(id: string, dto: UpdatePaymentDto): Promise<Payment> {
-    const payment = await this.findById(id);
+  async update(
+    id: string,
+    dto: UpdatePaymentDto,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment> {
+    const payment = await this.findById(id, userId, userRole);
     Object.assign(payment, dto);
     return this.paymentRepository.save(payment);
   }
@@ -133,10 +230,12 @@ export class PaymentsService {
    */
   async markAsPaid(
     id: string,
+    userId: string,
+    userRole: UserRole,
     paymentMethod?: string,
     transactionReference?: string,
   ): Promise<Payment> {
-    const payment = await this.findById(id);
+    const payment = await this.findById(id, userId, userRole);
     payment.status = PaymentStatus.PAID;
     payment.paymentDate = new Date();
     payment.paymentMethod = paymentMethod;
@@ -151,10 +250,12 @@ export class PaymentsService {
    */
   async recordPartialPayment(
     id: string,
+    userId: string,
+    userRole: UserRole,
     amount: number,
     paymentMethod?: string,
   ): Promise<Payment> {
-    const payment = await this.findById(id);
+    const payment = await this.findById(id, userId, userRole);
     payment.amount += amount;
     payment.remainingBalance = Math.max(0, payment.remainingBalance - amount);
     payment.status =
@@ -170,26 +271,35 @@ export class PaymentsService {
   /**
    * Get overdue payments
    */
-  async findOverdue(): Promise<Payment[]> {
+  async findOverdue(userId: string, userRole: UserRole): Promise<Payment[]> {
     const today = new Date();
-    return this.paymentRepository.find({
-      where: {
-        dueDate: LessThan(today),
-        status: PaymentStatus.PENDING,
-      },
-      relations: ["tenant", "property"],
-    });
+
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .where("payment.dueDate < :today", { today })
+      .andWhere("payment.status = :status", { status: PaymentStatus.PENDING });
+
+    return this.applyRoleScope(qb, userId, userRole).getMany();
   }
 
   /**
    * Get recent payments
    */
-  async findRecent(limit: number = 10): Promise<Payment[]> {
-    return this.paymentRepository.find({
-      relations: ["tenant", "property"],
-      order: { paymentDate: "DESC" },
-      take: limit,
-    });
+  async findRecent(
+    limit: number = 10,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment[]> {
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .orderBy("payment.paymentDate", "DESC")
+      .take(limit);
+
+    return this.applyRoleScope(qb, userId, userRole).getMany();
   }
 
   /**
@@ -198,14 +308,30 @@ export class PaymentsService {
   async getMonthSummary(
     month: number,
     year: number,
+    userId: string,
+    userRole: UserRole,
     propertyId?: string,
   ): Promise<PaymentSummary> {
-    const whereClause: Record<string, unknown> = { month, year };
-    if (propertyId) {
-      whereClause["propertyId"] = propertyId;
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can access payments",
+      );
     }
 
-    const payments = await this.paymentRepository.find({ where: whereClause });
+    const paymentsQb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .where("payment.month = :month", { month })
+      .andWhere("payment.year = :year", { year });
+
+    if (propertyId) {
+      paymentsQb.andWhere("payment.propertyId = :propertyId", { propertyId });
+    }
+
+    const payments = await this.applyRoleScope(
+      paymentsQb,
+      userId,
+      userRole,
+    ).getMany();
 
     // Get expected amount from active tenants
     const tenantsQuery = this.tenantRepository
@@ -214,6 +340,12 @@ export class PaymentsService {
 
     if (propertyId) {
       tenantsQuery.andWhere("tenant.propertyId = :propertyId", { propertyId });
+    }
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      tenantsQuery
+        .innerJoin("tenant.property", "property")
+        .andWhere("property.managerId = :managerId", { managerId: userId });
     }
 
     const tenants = await tenantsQuery.getMany();
@@ -257,17 +389,48 @@ export class PaymentsService {
   /**
    * Update overdue statuses
    */
-  async updateOverdueStatuses(): Promise<number> {
+  async updateOverdueStatuses(
+    userId: string,
+    userRole: UserRole,
+  ): Promise<number> {
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can update overdue statuses",
+      );
+    }
+
     const today = new Date();
-    const result = await this.paymentRepository
+    const query = this.paymentRepository
       .createQueryBuilder()
       .update(Payment)
       .set({ status: PaymentStatus.OVERDUE })
       .where("dueDate < :today", { today })
       .andWhere("status IN (:...statuses)", {
         statuses: [PaymentStatus.PENDING, PaymentStatus.PARTIAL],
-      })
-      .execute();
+      });
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      const managerPropertyRows = await this.paymentRepository
+        .createQueryBuilder("payment")
+        .select("DISTINCT payment.propertyId", "propertyId")
+        .innerJoin("payment.property", "property")
+        .where("property.managerId = :managerId", { managerId: userId })
+        .getRawMany<{ propertyId: string }>();
+
+      const managerPropertyIds = managerPropertyRows
+        .map((row) => row.propertyId)
+        .filter(Boolean);
+
+      if (managerPropertyIds.length === 0) {
+        return 0;
+      }
+
+      query.andWhere("property_id IN (:...managerPropertyIds)", {
+        managerPropertyIds,
+      });
+    }
+
+    const result = await query.execute();
 
     return result.affected ?? 0;
   }
@@ -277,11 +440,15 @@ export class PaymentsService {
    */
   async batchMarkAsPaid(
     ids: string[],
+    userId: string,
+    userRole: UserRole,
     paymentMethod?: string,
   ): Promise<Payment[]> {
-    const payments = await this.paymentRepository.find({
-      where: { id: In(ids) },
-    });
+    const qb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .where("payment.id IN (:...ids)", { ids });
+
+    const payments = await this.applyRoleScope(qb, userId, userRole).getMany();
 
     if (payments.length === 0) {
       throw new NotFoundException("No payments found for the given IDs");

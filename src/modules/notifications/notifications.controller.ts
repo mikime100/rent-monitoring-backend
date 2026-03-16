@@ -16,9 +16,13 @@ import {
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../../entities';
 
 @Controller('notifications')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 

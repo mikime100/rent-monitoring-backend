@@ -12,6 +12,7 @@ import { Repository } from "typeorm";
 import {
   Complaint,
   ComplaintStatus,
+  Property,
   User,
   UserRole,
   NotificationType,
@@ -27,6 +28,8 @@ export class ComplaintsService {
     private readonly complaintRepository: Repository<Complaint>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Property)
+    private readonly propertyRepository: Repository<Property>,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -34,6 +37,45 @@ export class ComplaintsService {
    * Create a complaint (Staff or GM)
    */
   async create(dto: CreateComplaintDto, creatorId: string): Promise<Complaint> {
+    const creator = await this.userRepository.findOne({
+      where: { id: creatorId },
+    });
+
+    if (!creator) {
+      throw new NotFoundException("Creator not found");
+    }
+
+    if (dto.propertyId) {
+      const property = await this.propertyRepository.findOne({
+        where: { id: dto.propertyId },
+        relations: ["assignedStaff"],
+      });
+
+      if (!property) {
+        throw new NotFoundException("Property not found");
+      }
+
+      if (creator.role === UserRole.STAFF) {
+        const hasAccess = property.assignedStaff?.some(
+          (staffUser) => staffUser.id === creatorId,
+        );
+        if (!hasAccess) {
+          throw new ForbiddenException(
+            "Staff can only submit complaints for assigned properties",
+          );
+        }
+      }
+
+      if (
+        creator.role === UserRole.GENERAL_MANAGER &&
+        property.managerId !== creatorId
+      ) {
+        throw new ForbiddenException(
+          "General manager can only submit complaints for managed properties",
+        );
+      }
+    }
+
     const complaint = this.complaintRepository.create({
       ...dto,
       staffId: creatorId,
@@ -43,10 +85,6 @@ export class ComplaintsService {
     const saved = await this.complaintRepository.save(complaint);
 
     try {
-      const creator = await this.userRepository.findOne({
-        where: { id: creatorId },
-      });
-
       const creatorName = creator
         ? `${creator.firstName} ${creator.lastName}`
         : "A user";
@@ -122,7 +160,20 @@ export class ComplaintsService {
       });
     }
 
-    // Owner and GM see all complaints
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      // General manager sees their own complaints + complaints from their staff only
+      return this.complaintRepository
+        .createQueryBuilder("complaint")
+        .leftJoinAndSelect("complaint.staff", "staff")
+        .leftJoinAndSelect("complaint.respondedBy", "respondedBy")
+        .leftJoinAndSelect("complaint.property", "property")
+        .where("complaint.staffId = :userId", { userId })
+        .orWhere("staff.managerId = :userId", { userId })
+        .orderBy("complaint.createdAt", "DESC")
+        .getMany();
+    }
+
+    // Owner sees all complaints
     return this.complaintRepository.find({
       relations: ["staff", "respondedBy", "property"],
       order: { createdAt: "DESC" },
@@ -130,9 +181,25 @@ export class ComplaintsService {
   }
 
   /**
-   * Get complaints for a specific property
+   * Get complaints for a specific property with role-based scope checks
    */
-  async findByProperty(propertyId: string): Promise<Complaint[]> {
+  async findByProperty(
+    propertyId: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Complaint[]> {
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      const managedProperty = await this.propertyRepository.findOne({
+        where: { id: propertyId, managerId: userId },
+      });
+
+      if (!managedProperty) {
+        throw new ForbiddenException(
+          "General manager can only access complaints for managed properties",
+        );
+      }
+    }
+
     return this.complaintRepository.find({
       where: { propertyId },
       relations: ["staff", "respondedBy"],
@@ -162,6 +229,16 @@ export class ComplaintsService {
       throw new ForbiddenException("Access denied");
     }
 
+    if (
+      userRole === UserRole.GENERAL_MANAGER &&
+      complaint.staffId !== userId &&
+      complaint.staff?.managerId !== userId
+    ) {
+      throw new ForbiddenException(
+        "General manager can only access own and managed staff complaints",
+      );
+    }
+
     return complaint;
   }
 
@@ -185,9 +262,21 @@ export class ComplaintsService {
       throw new NotFoundException("Complaint not found");
     }
 
-    // GM cannot respond to their own complaints
-    if (responderRole === UserRole.GENERAL_MANAGER && complaint.staffId === responderId) {
-      throw new ForbiddenException("You cannot respond to your own complaint");
+    // GM cannot respond to their own complaints and can only respond to their staff complaints
+    if (responderRole === UserRole.GENERAL_MANAGER) {
+      if (complaint.staffId === responderId) {
+        throw new ForbiddenException("You cannot respond to your own complaint");
+      }
+
+      const creator = await this.userRepository.findOne({
+        where: { id: complaint.staffId },
+      });
+
+      if (!creator || creator.managerId !== responderId) {
+        throw new ForbiddenException(
+          "General manager can only respond to complaints from managed staff",
+        );
+      }
     }
 
     // Owner can only respond to GM complaints

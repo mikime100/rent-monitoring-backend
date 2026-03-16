@@ -67,8 +67,23 @@ export class SyncService {
     let tenants: Tenant[];
     let payments: Payment[];
 
-    if (userRole === UserRole.GENERAL_MANAGER || userRole === UserRole.OWNER) {
-      // Manager/Owner gets all their properties and related data
+    if (userRole === UserRole.OWNER) {
+      // Owner gets all properties and related data
+      properties = await this.propertyRepository.find({
+        where: { updatedAt: MoreThan(since) },
+      });
+
+      tenants = await this.tenantRepository
+        .createQueryBuilder("tenant")
+        .where("tenant.updatedAt > :since", { since })
+        .getMany();
+
+      payments = await this.paymentRepository
+        .createQueryBuilder("payment")
+        .where("payment.updatedAt > :since", { since })
+        .getMany();
+    } else if (userRole === UserRole.GENERAL_MANAGER) {
+      // General manager gets managed properties and related data
       properties = await this.propertyRepository.find({
         where: { managerId: userId, updatedAt: MoreThan(since) },
       });

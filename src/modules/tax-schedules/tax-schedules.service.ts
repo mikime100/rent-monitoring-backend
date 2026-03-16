@@ -6,6 +6,7 @@
 import {
   Injectable,
   NotFoundException,
+  ForbiddenException,
   OnModuleInit,
   OnModuleDestroy,
   Logger,
@@ -17,6 +18,7 @@ import {
   TaxFrequency,
   Property,
   NotificationType,
+  UserRole,
 } from "../../entities";
 import { NotificationsService } from "../notifications/notifications.service";
 import {
@@ -137,12 +139,25 @@ export class TaxSchedulesService implements OnModuleInit, OnModuleDestroy {
   /**
    * Create a new tax schedule
    */
-  async create(dto: CreateTaxScheduleDto): Promise<TaxSchedule> {
+  async create(
+    dto: CreateTaxScheduleDto,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<TaxSchedule> {
     const property = await this.propertyRepo.findOne({
       where: { id: dto.propertyId },
     });
     if (!property) {
       throw new NotFoundException("Property not found");
+    }
+
+    if (
+      userRole === UserRole.GENERAL_MANAGER &&
+      property.managerId !== userId
+    ) {
+      throw new ForbiddenException(
+        "General manager can only manage tax schedules for owned properties",
+      );
     }
 
     const nextDueDate = this.calculateNextDueDate(dto.frequency, dto.dueDay);
@@ -159,36 +174,77 @@ export class TaxSchedulesService implements OnModuleInit, OnModuleDestroy {
   /**
    * Get all tax schedules, optionally filtered by property
    */
-  async findAll(propertyId?: string): Promise<TaxSchedule[]> {
-    const where: any = {};
-    if (propertyId) where.propertyId = propertyId;
+  async findAll(
+    userId: string,
+    userRole: UserRole,
+    propertyId?: string,
+  ): Promise<TaxSchedule[]> {
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can access tax schedules",
+      );
+    }
 
-    return this.taxScheduleRepo.find({
-      where,
-      relations: ["property"],
-      order: { nextDueDate: "ASC" },
-    });
+    const qb = this.taxScheduleRepo
+      .createQueryBuilder("schedule")
+      .leftJoinAndSelect("schedule.property", "property")
+      .orderBy("schedule.nextDueDate", "ASC");
+
+    if (propertyId) {
+      qb.andWhere("schedule.propertyId = :propertyId", { propertyId });
+    }
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      qb.andWhere("property.managerId = :managerId", { managerId: userId });
+    }
+
+    return qb.getMany();
   }
 
   /**
    * Get a single tax schedule by ID
    */
-  async findById(id: string): Promise<TaxSchedule> {
-    const schedule = await this.taxScheduleRepo.findOne({
-      where: { id },
-      relations: ["property"],
-    });
+  async findById(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<TaxSchedule> {
+    const schedule = await this.taxScheduleRepo
+      .createQueryBuilder("schedule")
+      .leftJoinAndSelect("schedule.property", "property")
+      .where("schedule.id = :id", { id })
+      .getOne();
+
     if (!schedule) {
       throw new NotFoundException("Tax schedule not found");
     }
+
+    if (
+      userRole === UserRole.GENERAL_MANAGER &&
+      schedule.property?.managerId !== userId
+    ) {
+      throw new ForbiddenException("Access denied to tax schedule");
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can access tax schedules",
+      );
+    }
+
     return schedule;
   }
 
   /**
    * Update a tax schedule
    */
-  async update(id: string, dto: UpdateTaxScheduleDto): Promise<TaxSchedule> {
-    const schedule = await this.findById(id);
+  async update(
+    id: string,
+    dto: UpdateTaxScheduleDto,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<TaxSchedule> {
+    const schedule = await this.findById(id, userId, userRole);
     Object.assign(schedule, dto);
 
     // Recalculate next due date if frequency or dueDay changed
@@ -206,22 +262,41 @@ export class TaxSchedulesService implements OnModuleInit, OnModuleDestroy {
   /**
    * Delete a tax schedule
    */
-  async remove(id: string): Promise<void> {
-    const schedule = await this.findById(id);
+  async remove(id: string, userId: string, userRole: UserRole): Promise<void> {
+    const schedule = await this.findById(id, userId, userRole);
     await this.taxScheduleRepo.remove(schedule);
   }
 
   /**
    * Check all active schedules and send notifications at 5, 3, 1 days before due
    */
-  async checkAndSendNotifications(): Promise<{
+  async checkAndSendNotifications(
+    userId?: string,
+    userRole?: UserRole,
+  ): Promise<{
     checked: number;
     sent: number;
   }> {
-    const schedules = await this.taxScheduleRepo.find({
-      where: { isActive: true },
-      relations: ["property"],
-    });
+    if (
+      userRole &&
+      userRole !== UserRole.OWNER &&
+      userRole !== UserRole.GENERAL_MANAGER
+    ) {
+      throw new ForbiddenException(
+        "Only owner and general manager can check tax notifications",
+      );
+    }
+
+    const qb = this.taxScheduleRepo
+      .createQueryBuilder("schedule")
+      .leftJoinAndSelect("schedule.property", "property")
+      .where("schedule.isActive = :isActive", { isActive: true });
+
+    if (userRole === UserRole.GENERAL_MANAGER && userId) {
+      qb.andWhere("property.managerId = :managerId", { managerId: userId });
+    }
+
+    const schedules = await qb.getMany();
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);

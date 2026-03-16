@@ -7,6 +7,8 @@ import {
   UnauthorizedException,
   ConflictException,
   BadRequestException,
+  HttpException,
+  HttpStatus,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -33,8 +35,14 @@ export interface AuthTokens {
 @Injectable()
 export class AuthService {
   private readonly SALT_ROUNDS = 12;
+  private readonly MAX_FAILED_LOGIN_ATTEMPTS = 5;
+  private readonly LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
   private readonly accessExpiresIn: string;
   private readonly refreshExpiresIn: string;
+  private readonly loginAttemptState = new Map<
+    string,
+    { count: number; lockedUntil?: number }
+  >();
 
   constructor(
     @InjectRepository(User)
@@ -92,11 +100,15 @@ export class AuthService {
    * Login user
    */
   async login(dto: LoginDto): Promise<{ user: User; tokens: AuthTokens }> {
+    const loginKey = dto.email.toLowerCase().trim();
+    this.assertLoginNotLocked(loginKey);
+
     const user = await this.userRepository.findOne({
       where: { email: dto.email.toLowerCase() },
     });
 
     if (!user) {
+      this.registerFailedLogin(loginKey);
       throw new UnauthorizedException("Invalid credentials");
     }
 
@@ -107,8 +119,12 @@ export class AuthService {
     // Verify password
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
     if (!isPasswordValid) {
+      this.registerFailedLogin(loginKey);
       throw new UnauthorizedException("Invalid credentials");
     }
+
+    // Successful login resets failed-attempt counter
+    this.loginAttemptState.delete(loginKey);
 
     // Generate tokens
     const tokens = await this.generateTokens(user);
@@ -120,6 +136,41 @@ export class AuthService {
     });
 
     return { user, tokens };
+  }
+
+  private assertLoginNotLocked(loginKey: string): void {
+    const state = this.loginAttemptState.get(loginKey);
+    if (!state?.lockedUntil) {
+      return;
+    }
+
+    if (state.lockedUntil > Date.now()) {
+      throw new HttpException(
+        "Too many failed login attempts. Please try again later.",
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    this.loginAttemptState.delete(loginKey);
+  }
+
+  private registerFailedLogin(loginKey: string): void {
+    const existing = this.loginAttemptState.get(loginKey) ?? { count: 0 };
+    const nextCount = existing.count + 1;
+
+    if (nextCount >= this.MAX_FAILED_LOGIN_ATTEMPTS) {
+      this.loginAttemptState.set(loginKey, {
+        count: nextCount,
+        lockedUntil: Date.now() + this.LOGIN_LOCKOUT_MS,
+      });
+
+      throw new HttpException(
+        "Too many failed login attempts. Please try again later.",
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    this.loginAttemptState.set(loginKey, { count: nextCount });
   }
 
   /**

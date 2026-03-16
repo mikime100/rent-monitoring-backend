@@ -49,15 +49,18 @@ export class PropertiesController {
   }
 
   @Get()
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
   @ApiOperation({ summary: "Get all properties" })
   async findAll(
     @Request() req: { user: AuthUser },
     @Query("scope") scope?: string,
   ) {
-    // When scope=all, return all properties (e.g. for complaint submission)
+    // scope=all should never bypass role boundaries
     if (scope === "all") {
-      const properties = await this.propertiesService.findAll();
+      const properties =
+        req.user.role === UserRole.OWNER
+          ? await this.propertiesService.findAll()
+          : await this.propertiesService.findAllByManager(req.user.sub);
       return { success: true, data: properties };
     }
     // Owner sees ALL properties; GM sees only their own; Staff sees assigned

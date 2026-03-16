@@ -66,9 +66,16 @@ export class ComplaintsController {
    * GET /complaints/property/:propertyId - Get complaints for a property
    */
   @Get("property/:propertyId")
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
-  async findByProperty(@Param("propertyId") propertyId: string) {
-    return this.complaintsService.findByProperty(propertyId);
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
+  async findByProperty(
+    @Param("propertyId") propertyId: string,
+    @Request() req: { user: AuthUser },
+  ) {
+    return this.complaintsService.findByProperty(
+      propertyId,
+      req.user.sub,
+      req.user.role,
+    );
   }
 
   /**
