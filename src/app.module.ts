@@ -29,20 +29,24 @@ import configuration from "./config/configuration";
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        type: "postgres",
-        host: configService.get<string>("database.host"),
-        port: configService.get<number>("database.port"),
-        username: configService.get<string>("database.username"),
-        password: configService.get<string>("database.password"),
-        database: configService.get<string>("database.name"),
-        entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
-        synchronize: configService.get<boolean>("database.synchronize"),
-        logging: configService.get<boolean>("database.logging"),
-        ssl: configService.get<boolean>("database.ssl")
-          ? { rejectUnauthorized: false }
-          : false,
-      }),
+      useFactory: (configService: ConfigService) => {
+        const useSsl = configService.get<boolean>("database.ssl");
+        const rejectUnauthorized =
+          configService.get<boolean>("database.sslRejectUnauthorized") !== false;
+
+        return {
+          type: "postgres",
+          host: configService.get<string>("database.host"),
+          port: configService.get<number>("database.port"),
+          username: configService.get<string>("database.username"),
+          password: configService.get<string>("database.password"),
+          database: configService.get<string>("database.name"),
+          entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
+          synchronize: configService.get<boolean>("database.synchronize"),
+          logging: configService.get<boolean>("database.logging"),
+          ssl: useSsl ? { rejectUnauthorized } : false,
+        };
+      },
     }),
 
     // Feature modules

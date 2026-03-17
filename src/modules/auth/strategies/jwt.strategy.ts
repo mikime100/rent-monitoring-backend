@@ -28,11 +28,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException("User not found or inactive");
     }
 
+    if (this.authService.isAccessTokenRevoked(payload)) {
+      throw new UnauthorizedException("Token has been revoked");
+    }
+
     return {
       sub: user.id,
       email: user.email,
       role: user.role,
       managerId: user.managerId,
+      tokenVersion: payload.tokenVersion,
+      iat: payload.iat,
+      exp: payload.exp,
+      jti: payload.jti,
     };
   }
 }

@@ -4,12 +4,12 @@
 
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { Property, User } from "../../entities";
+import { Property, Tenant, User } from "../../entities";
 import { PropertiesController } from "./properties.controller";
 import { PropertiesService } from "./properties.service";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Property, User])],
+  imports: [TypeOrmModule.forFeature([Property, Tenant, User])],
   controllers: [PropertiesController],
   providers: [PropertiesService],
   exports: [PropertiesService],

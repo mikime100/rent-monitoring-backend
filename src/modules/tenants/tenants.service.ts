@@ -6,6 +6,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan } from "typeorm";
@@ -45,6 +46,23 @@ export class TenantsService {
       property.managerId !== userId
     ) {
       throw new ForbiddenException("Access denied to this property");
+    }
+
+    const contractStartDate = new Date(dto.contractStartDate);
+    const contractEndDate = dto.contractEndDate
+      ? new Date(dto.contractEndDate)
+      : undefined;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (contractEndDate && contractEndDate < contractStartDate) {
+      throw new BadRequestException(
+        "Contract end date cannot be earlier than contract start date",
+      );
+    }
+
+    if (contractEndDate && contractEndDate < today) {
+      throw new BadRequestException("Contract end date cannot be in the past");
     }
 
     const tenant = this.tenantRepository.create({
@@ -157,6 +175,30 @@ export class TenantsService {
     userRole: UserRole,
   ): Promise<Tenant> {
     const tenant = await this.findById(id, userId, userRole);
+
+    const nextStartDate = new Date(
+      dto.contractStartDate ?? tenant.contractStartDate,
+    );
+    const nextEndDate = dto.contractEndDate
+      ? new Date(dto.contractEndDate)
+      : tenant.contractEndDate
+        ? new Date(tenant.contractEndDate)
+        : undefined;
+
+    if (nextEndDate && nextEndDate < nextStartDate) {
+      throw new BadRequestException(
+        "Contract end date cannot be earlier than contract start date",
+      );
+    }
+
+    if (dto.contractEndDate) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (nextEndDate && nextEndDate < today) {
+        throw new BadRequestException("Contract end date cannot be in the past");
+      }
+    }
+
     Object.assign(tenant, dto);
     return this.tenantRepository.save(tenant);
   }
