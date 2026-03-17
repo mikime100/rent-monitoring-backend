@@ -100,10 +100,11 @@ describe("Authorization and access control", () => {
 
   test("Rate limiting blocks requests above configured threshold", async () => {
     const totalRequests = config.rateLimitPerMinute + 5;
+    const probePath = `/rate-limit-probe-${Date.now()}`;
 
     const responses = await Promise.all(
       Array.from({ length: totalRequests }).map(() =>
-        client.get(config.endpoints.health).set(authHeader(staff1Token)),
+        client.get(probePath).set(authHeader(staff1Token)),
       ),
     );
 

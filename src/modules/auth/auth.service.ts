@@ -15,6 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
+import { createHash, randomUUID } from "crypto";
 import { User, UserRole } from "../../entities";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
@@ -24,6 +25,10 @@ export interface JwtPayload {
   email: string;
   role: UserRole;
   managerId?: string;
+  tokenVersion?: number;
+  iat?: number;
+  exp?: number;
+  jti?: string;
 }
 
 export interface AuthTokens {
@@ -43,6 +48,8 @@ export class AuthService {
     string,
     { count: number; lockedUntil?: number }
   >();
+  private readonly revokedAccessTokens = new Map<string, number>();
+  private readonly userTokenVersion = new Map<string, number>();
 
   constructor(
     @InjectRepository(User)
@@ -130,8 +137,9 @@ export class AuthService {
     const tokens = await this.generateTokens(user);
 
     // Update refresh token and last login
+    const hashedRefreshToken = await this.hashRefreshToken(tokens.refreshToken);
     await this.userRepository.update(user.id, {
-      refreshToken: await bcrypt.hash(tokens.refreshToken, this.SALT_ROUNDS),
+      refreshToken: hashedRefreshToken,
       lastLoginAt: new Date(),
     });
 
@@ -176,8 +184,17 @@ export class AuthService {
   /**
    * Logout user
    */
-  async logout(userId: string): Promise<void> {
-    await this.userRepository.update(userId, { refreshToken: undefined });
+  async logout(
+    userId: string,
+    accessTokenJti?: string,
+    accessTokenExp?: number,
+  ): Promise<void> {
+    await this.userRepository.update(userId, { refreshToken: null });
+
+    if (accessTokenJti) {
+      const fallbackExp = this.currentUnixTimestamp() + this.accessTokenTtlSeconds();
+      this.revokeAccessToken(accessTokenJti, accessTokenExp ?? fallbackExp);
+    }
   }
 
   /**
@@ -194,7 +211,10 @@ export class AuthService {
     }
 
     // Verify refresh token
-    const isValid = await bcrypt.compare(refreshToken, user.refreshToken);
+    const isValid = await bcrypt.compare(
+      this.normalizeTokenForHash(refreshToken),
+      user.refreshToken,
+    );
     if (!isValid) {
       throw new UnauthorizedException("Invalid refresh token");
     }
@@ -217,14 +237,17 @@ export class AuthService {
       email: user.email,
       role: user.role,
       managerId: user.managerId,
+      tokenVersion: this.userTokenVersion.get(user.id) ?? 0,
     };
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
         expiresIn: this.accessExpiresIn,
+        jwtid: randomUUID(),
       }),
       this.jwtService.signAsync(payload, {
         expiresIn: this.refreshExpiresIn,
+        jwtid: randomUUID(),
       }),
     ]);
 
@@ -241,8 +264,19 @@ export class AuthService {
     userId: string,
     refreshToken: string,
   ): Promise<void> {
-    const hashedToken = await bcrypt.hash(refreshToken, this.SALT_ROUNDS);
+    const hashedToken = await this.hashRefreshToken(refreshToken);
     await this.userRepository.update(userId, { refreshToken: hashedToken });
+  }
+
+  private normalizeTokenForHash(token: string): string {
+    return createHash("sha256").update(token).digest("hex");
+  }
+
+  private async hashRefreshToken(refreshToken: string): Promise<string> {
+    return bcrypt.hash(
+      this.normalizeTokenForHash(refreshToken),
+      this.SALT_ROUNDS,
+    );
   }
 
   /**
@@ -267,6 +301,56 @@ export class AuthService {
       default:
         return 900000;
     }
+  }
+
+  private accessTokenTtlSeconds(): number {
+    return Math.max(1, Math.floor(this.parseExpiresIn(this.accessExpiresIn) / 1000));
+  }
+
+  private currentUnixTimestamp(): number {
+    return Math.floor(Date.now() / 1000);
+  }
+
+  private pruneRevocationState(now: number): void {
+    for (const [jti, exp] of this.revokedAccessTokens.entries()) {
+      if (exp < now) {
+        this.revokedAccessTokens.delete(jti);
+      }
+    }
+  }
+
+  private revokeAccessToken(jti: string, exp: number): void {
+    const now = this.currentUnixTimestamp();
+    this.pruneRevocationState(now);
+
+    if (exp <= now) {
+      return;
+    }
+
+    this.revokedAccessTokens.set(jti, exp);
+  }
+
+  private invalidateAllUserTokens(userId: string): void {
+    const current = this.userTokenVersion.get(userId) ?? 0;
+    this.userTokenVersion.set(userId, current + 1);
+  }
+
+  isAccessTokenRevoked(payload: JwtPayload): boolean {
+    const now = this.currentUnixTimestamp();
+    this.pruneRevocationState(now);
+
+    if (!payload.jti) {
+      return true;
+    }
+
+    const revokedExp = this.revokedAccessTokens.get(payload.jti);
+    if (revokedExp && revokedExp >= now) {
+      return true;
+    }
+
+    const currentVersion = this.userTokenVersion.get(payload.sub) ?? 0;
+    const payloadVersion = payload.tokenVersion ?? 0;
+    return payloadVersion !== currentVersion;
   }
 
   /**
@@ -298,7 +382,11 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, this.SALT_ROUNDS);
-    await this.userRepository.update(userId, { password: hashedPassword });
+    await this.userRepository.update(userId, {
+      password: hashedPassword,
+      refreshToken: null,
+    });
+    this.invalidateAllUserTokens(userId);
   }
 
   /**

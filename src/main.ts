@@ -23,7 +23,7 @@ async function bootstrap() {
 
   const globalRateLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10),
+    max: parseInt(process.env.RATE_LIMIT_MAX ?? "1000", 10),
     keyGenerator: (req: Request) => `${req.ip}:${req.path}`,
     standardHeaders: true,
     legacyHeaders: false,
@@ -35,7 +35,7 @@ async function bootstrap() {
 
   const loginRateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: parseInt(process.env.LOGIN_RATE_LIMIT_MAX ?? "30", 10),
+    max: parseInt(process.env.LOGIN_RATE_LIMIT_MAX ?? "200", 10),
     keyGenerator: (req: Request) => {
       const email = String(req.body?.email ?? "")
         .toLowerCase()

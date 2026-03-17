@@ -6,6 +6,8 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
+  ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, LessThan, Between, In } from "typeorm";
@@ -26,6 +28,10 @@ export interface PaymentSummary {
 
 @Injectable()
 export class PaymentsService {
+  private readonly MAX_PAYMENT_AMOUNT = 99_999_999.99;
+  private readonly REPLAY_WINDOW_MS = 1000;
+  private readonly inFlightReplayKeys = new Set<string>();
+
   constructor(
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
@@ -63,6 +69,19 @@ export class PaymentsService {
     recordedById: string,
     userRole: UserRole,
   ): Promise<Payment> {
+    if (!Number.isFinite(Number(dto.amount)) || Number(dto.amount) <= 0) {
+      throw new BadRequestException("Payment amount must be greater than zero");
+    }
+
+    if (Number(dto.amount) > this.MAX_PAYMENT_AMOUNT) {
+      throw new BadRequestException("Payment amount exceeds allowed maximum");
+    }
+
+    const paymentDate = new Date(dto.paymentDate);
+    if (Number.isNaN(paymentDate.getTime())) {
+      throw new BadRequestException("Invalid payment date");
+    }
+
     const tenant = await this.tenantRepository.findOne({
       where: { id: dto.tenantId },
       relations: ["property"],
@@ -85,23 +104,65 @@ export class PaymentsService {
       );
     }
 
-    const paymentDate = new Date(dto.paymentDate);
-    const remainingBalance = tenant.monthlyRent - dto.amount;
+    const replayKey =
+      dto.transactionReference?.trim() ||
+      `${dto.tenantId}:${Number(dto.amount)}:${paymentDate.toISOString()}`;
 
-    const payment = this.paymentRepository.create({
-      ...dto,
-      recordedById,
-      propertyId: tenant.propertyId,
-      month: paymentDate.getMonth() + 1,
-      year: paymentDate.getFullYear(),
-      status:
-        remainingBalance <= 0 ? PaymentStatus.PAID : PaymentStatus.PARTIAL,
-      isPartialPayment: remainingBalance > 0,
-      remainingBalance: Math.max(0, remainingBalance),
-      receiptNumber: this.generateReceiptNumber(),
-    });
+    if (this.inFlightReplayKeys.has(replayKey)) {
+      throw new ConflictException("Duplicate payment submission detected");
+    }
 
-    return this.paymentRepository.save(payment);
+    this.inFlightReplayKeys.add(replayKey);
+
+    try {
+      if (dto.transactionReference) {
+        const existingRef = await this.paymentRepository.findOne({
+          where: { transactionReference: dto.transactionReference },
+        });
+
+        if (existingRef) {
+          throw new ConflictException("Duplicate transaction reference");
+        }
+      }
+
+      const duplicateWindowStart = new Date(
+        paymentDate.getTime() - this.REPLAY_WINDOW_MS,
+      );
+      const duplicateWindowEnd = new Date(
+        paymentDate.getTime() + this.REPLAY_WINDOW_MS,
+      );
+
+      const duplicatePayment = await this.paymentRepository.findOne({
+        where: {
+          tenantId: dto.tenantId,
+          amount: dto.amount,
+          paymentDate: Between(duplicateWindowStart, duplicateWindowEnd),
+        },
+      });
+
+      if (duplicatePayment) {
+        throw new ConflictException("Duplicate payment submission detected");
+      }
+
+      const remainingBalance = tenant.monthlyRent - dto.amount;
+
+      const payment = this.paymentRepository.create({
+        ...dto,
+        recordedById,
+        propertyId: tenant.propertyId,
+        month: paymentDate.getMonth() + 1,
+        year: paymentDate.getFullYear(),
+        status:
+          remainingBalance <= 0 ? PaymentStatus.PAID : PaymentStatus.PARTIAL,
+        isPartialPayment: remainingBalance > 0,
+        remainingBalance: Math.max(0, remainingBalance),
+        receiptNumber: this.generateReceiptNumber(),
+      });
+
+      return this.paymentRepository.save(payment);
+    } finally {
+      this.inFlightReplayKeys.delete(replayKey);
+    }
   }
 
   /**

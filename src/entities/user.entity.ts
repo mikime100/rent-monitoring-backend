@@ -66,9 +66,9 @@ export class User extends BaseEntity {
   @Column({ name: "fcm_token", nullable: true })
   fcmToken?: string;
 
-  @Column({ name: "refresh_token", nullable: true })
+  @Column({ name: "refresh_token", type: "text", nullable: true })
   @Exclude()
-  refreshToken?: string;
+  refreshToken?: string | null;
 
   @Column({ name: "last_login_at", nullable: true })
   lastLoginAt?: Date;

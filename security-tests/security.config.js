@@ -48,7 +48,10 @@ module.exports = {
     },
   },
 
-  rateLimitPerMinute: toInt(process.env.SEC_RATE_LIMIT, 100),
+  rateLimitPerMinute: toInt(
+    process.env.SEC_RATE_LIMIT ?? process.env.RATE_LIMIT_MAX,
+    1000,
+  ),
   unauthorizedOrigin:
     process.env.SEC_UNAUTHORIZED_ORIGIN || "https://evil.example.com",
   allowHttpForLocal:

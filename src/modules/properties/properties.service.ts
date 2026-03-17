@@ -6,10 +6,18 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { Property, PropertyStatus, User, UserRole } from "../../entities";
+import {
+  Property,
+  PropertyStatus,
+  Tenant,
+  TenantStatus,
+  User,
+  UserRole,
+} from "../../entities";
 import { CreatePropertyDto } from "./dto/create-property.dto";
 import { UpdatePropertyDto } from "./dto/update-property.dto";
 
@@ -18,6 +26,8 @@ export class PropertiesService {
   constructor(
     @InjectRepository(Property)
     private readonly propertyRepository: Repository<Property>,
+    @InjectRepository(Tenant)
+    private readonly tenantRepository: Repository<Tenant>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
   ) {}
@@ -130,6 +140,16 @@ export class PropertiesService {
 
     if (!property) {
       throw new NotFoundException("Property not found");
+    }
+
+    const activeTenantCount = await this.tenantRepository.count({
+      where: { propertyId: id, status: TenantStatus.ACTIVE },
+    });
+
+    if (activeTenantCount > 0) {
+      throw new ConflictException(
+        "Cannot delete property while active tenants exist",
+      );
     }
 
     await this.propertyRepository.remove(property);
