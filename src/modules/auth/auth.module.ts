@@ -21,12 +21,17 @@ import { RolesGuard } from "./guards/roles.guard";
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>("jwt.secret"),
-        signOptions: {
-          expiresIn: configService.get<string>("jwt.accessExpiresIn"),
-        },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const accessExpiresIn =
+          configService.get<string>("jwt.accessExpiresIn") ?? "15m";
+
+        return {
+          secret: configService.getOrThrow<string>("jwt.secret"),
+          signOptions: {
+            expiresIn: accessExpiresIn as any,
+          },
+        };
+      },
     }),
   ],
   controllers: [AuthController],
