@@ -49,7 +49,7 @@ export class PropertiesController {
   }
 
   @Get()
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER)
+  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
   @ApiOperation({ summary: "Get all properties" })
   async findAll(
     @Request() req: { user: AuthUser },
@@ -60,7 +60,9 @@ export class PropertiesController {
       const properties =
         req.user.role === UserRole.OWNER
           ? await this.propertiesService.findAll()
-          : await this.propertiesService.findAllByManager(req.user.sub);
+          : req.user.role === UserRole.GENERAL_MANAGER
+            ? await this.propertiesService.findAllByManager(req.user.sub)
+            : await this.propertiesService.findAllByStaff(req.user.sub);
       return { success: true, data: properties };
     }
     // Owner sees ALL properties; GM sees only their own; Staff sees assigned
