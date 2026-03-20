@@ -265,7 +265,9 @@ export class ComplaintsService {
     // GM cannot respond to their own complaints and can only respond to their staff complaints
     if (responderRole === UserRole.GENERAL_MANAGER) {
       if (complaint.staffId === responderId) {
-        throw new ForbiddenException("You cannot respond to your own complaint");
+        throw new ForbiddenException(
+          "You cannot respond to your own complaint",
+        );
       }
 
       const creator = await this.userRepository.findOne({
@@ -281,9 +283,13 @@ export class ComplaintsService {
 
     // Owner can only respond to GM complaints
     if (responderRole === UserRole.OWNER) {
-      const creator = await this.userRepository.findOne({ where: { id: complaint.staffId } });
+      const creator = await this.userRepository.findOne({
+        where: { id: complaint.staffId },
+      });
       if (creator?.role !== UserRole.GENERAL_MANAGER) {
-        throw new ForbiddenException("Owner can only respond to General Manager complaints");
+        throw new ForbiddenException(
+          "Owner can only respond to General Manager complaints",
+        );
       }
     }
 

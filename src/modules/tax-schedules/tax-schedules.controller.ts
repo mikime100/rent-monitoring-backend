@@ -37,7 +37,10 @@ export class TaxSchedulesController {
   }
 
   @Get()
-  findAll(@Query("propertyId") propertyId: string | undefined, @Request() req: any) {
+  findAll(
+    @Query("propertyId") propertyId: string | undefined,
+    @Request() req: any,
+  ) {
     return this.taxSchedulesService.findAll(
       req.user.sub,
       req.user.role,
@@ -56,7 +59,12 @@ export class TaxSchedulesController {
     @Body() dto: UpdateTaxScheduleDto,
     @Request() req: any,
   ) {
-    return this.taxSchedulesService.update(id, dto, req.user.sub, req.user.role);
+    return this.taxSchedulesService.update(
+      id,
+      dto,
+      req.user.sub,
+      req.user.role,
+    );
   }
 
   @Delete(":id")

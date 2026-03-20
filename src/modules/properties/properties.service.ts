@@ -103,6 +103,13 @@ export class PropertiesService {
       throw new ForbiddenException("Access denied");
     }
 
+    if (userRole === UserRole.STAFF) {
+      const isAssigned = property.assignedStaff?.some((s) => s.id === userId);
+      if (!isAssigned) {
+        throw new ForbiddenException("Access denied");
+      }
+    }
+
     if (userRole === UserRole.OWNER) {
       // Owner can view all properties
     }

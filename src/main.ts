@@ -7,7 +7,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { NextFunction, Request, Response } from "express";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
@@ -24,7 +24,8 @@ async function bootstrap() {
   const globalRateLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX ?? "1000", 10),
-    keyGenerator: (req: Request) => `${req.ip}:${req.path}`,
+    keyGenerator: (req: Request) =>
+      `${ipKeyGenerator(req.ip ?? "")}:${req.path}`,
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -40,7 +41,7 @@ async function bootstrap() {
       const email = String(req.body?.email ?? "")
         .toLowerCase()
         .trim();
-      return `${req.ip}:${req.path}:${email}`;
+      return `${ipKeyGenerator(req.ip ?? "")}:${req.path}:${email}`;
     },
     standardHeaders: true,
     legacyHeaders: false,

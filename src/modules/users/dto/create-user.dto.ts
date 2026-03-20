@@ -2,7 +2,17 @@
  * Create User DTO
  */
 
-import { IsEmail, IsString, MinLength, MaxLength, IsOptional, Matches } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  IsOptional,
+  Matches,
+  IsArray,
+  ArrayUnique,
+  IsUUID,
+} from 'class-validator';
 
 export class CreateUserDto {
   @IsEmail()
@@ -26,4 +36,10 @@ export class CreateUserDto {
   @MinLength(2)
   @MaxLength(50)
   lastName: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  assignedPropertyIds?: string[];
 }

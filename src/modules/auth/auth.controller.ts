@@ -55,7 +55,9 @@ export class AuthController {
   @ApiOperation({ summary: "Logout current user" })
   async logout(
     @Request()
-    req: { user: { sub: string; jti?: string; exp?: number } },
+    req: {
+      user: { sub: string; jti?: string; exp?: number };
+    },
   ) {
     await this.authService.logout(req.user.sub, req.user.jti, req.user.exp);
     return {

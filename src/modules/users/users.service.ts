@@ -9,7 +9,7 @@ import {
   ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import * as bcrypt from "bcrypt";
 import { User, UserRole, Property } from "../../entities";
 import { CreateUserDto } from "./dto/create-user.dto";
@@ -38,6 +38,25 @@ export class UsersService {
       );
     }
 
+    const requestedPropertyIds = [...new Set(dto.assignedPropertyIds ?? [])];
+    let managedProperties: Property[] = [];
+
+    if (requestedPropertyIds.length > 0) {
+      managedProperties = await this.propertyRepository.find({
+        where: {
+          id: In(requestedPropertyIds),
+          managerId,
+        },
+        relations: ["assignedStaff"],
+      });
+
+      if (managedProperties.length !== requestedPropertyIds.length) {
+        throw new ForbiddenException(
+          "Some selected properties are invalid or not managed by you",
+        );
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(dto.password, 12);
 
     const staffMember = this.userRepository.create({
@@ -49,8 +68,35 @@ export class UsersService {
     });
 
     const saved = await this.userRepository.save(staffMember);
-    delete (saved as any).password;
-    return saved;
+
+    if (managedProperties.length > 0) {
+      try {
+        for (const property of managedProperties) {
+          const alreadyAssigned = property.assignedStaff?.some(
+            (assigned) => assigned.id === saved.id,
+          );
+          if (!alreadyAssigned) {
+            property.assignedStaff = [
+              ...(property.assignedStaff || []),
+              saved,
+            ];
+          }
+        }
+
+        await this.propertyRepository.save(managedProperties);
+      } catch {
+        // Keep staff creation successful even if assignment sync fails.
+      }
+    }
+
+    const hydrated = await this.userRepository.findOne({
+      where: { id: saved.id },
+      relations: ["assignedProperties"],
+    });
+
+    const result = hydrated || saved;
+    delete (result as any).password;
+    return result;
   }
 
   /**

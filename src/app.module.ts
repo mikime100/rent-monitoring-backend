@@ -32,7 +32,8 @@ import configuration from "./config/configuration";
       useFactory: (configService: ConfigService) => {
         const useSsl = configService.get<boolean>("database.ssl");
         const rejectUnauthorized =
-          configService.get<boolean>("database.sslRejectUnauthorized") !== false;
+          configService.get<boolean>("database.sslRejectUnauthorized") !==
+          false;
 
         return {
           type: "postgres",
