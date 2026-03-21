@@ -419,6 +419,34 @@ async function seed() {
       }
     }
 
+    // Long-overdue fixtures (more than 30 days overdue) to validate overdue alerts.
+    const longOverdueDate = new Date(now);
+    longOverdueDate.setDate(longOverdueDate.getDate() - 45);
+    const longOverdueMonth = longOverdueDate.getMonth() + 1;
+    const longOverdueYear = longOverdueDate.getFullYear();
+    const longOverdueDueDate = `${longOverdueYear}-${String(longOverdueMonth).padStart(2, "0")}-${String(longOverdueDate.getDate()).padStart(2, "0")}`;
+
+    for (const tenant of [tenants[6], tenants[7]]) {
+      const t = tenant!;
+      await qr.query(
+        `INSERT INTO "payments" (id, tenant_id, property_id, amount, currency, payment_date, due_date, status, month, year, is_partial_payment, remaining_balance, recorded_by_id, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'KES',$5,$6,'overdue',$7,$8,false,$9,$10,$11,$11)`,
+        [
+          uuidv4(),
+          t.id,
+          t.property,
+          t.rent,
+          longOverdueDate.toISOString(),
+          longOverdueDueDate,
+          longOverdueMonth,
+          longOverdueYear,
+          t.rent,
+          gmId,
+          nowISO,
+        ],
+      );
+    }
+
     // â”€â”€ NOTIFICATIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     console.log("ðŸ””  Seeding notifications...");
 
@@ -498,6 +526,14 @@ async function seed() {
         isRead: false,
         createdAt: hoursAgo(12),
       },
+      {
+        title: "Complaint response",
+        message:
+          "Your complaint 'Security light not working' has been marked resolved by the general manager.",
+        type: "complaint_response",
+        isRead: false,
+        createdAt: hoursAgo(3),
+      },
     ];
 
     // Seed sample complaints
@@ -574,6 +610,17 @@ async function seed() {
         `INSERT INTO "notifications" (id, user_id, title, message, type, is_read, created_at, updated_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$7)`,
         [uuidv4(), ownerId, n.title, n.message, n.type, n.isRead, n.createdAt],
+      );
+      // Staff visibility for role-based notification testing
+      await qr.query(
+        `INSERT INTO "notifications" (id, user_id, title, message, type, is_read, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$7)`,
+        [uuidv4(), staff1Id, n.title, n.message, n.type, n.isRead, n.createdAt],
+      );
+      await qr.query(
+        `INSERT INTO "notifications" (id, user_id, title, message, type, is_read, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$7)`,
+        [uuidv4(), staff2Id, n.title, n.message, n.type, n.isRead, n.createdAt],
       );
     }
 

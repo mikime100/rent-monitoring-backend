@@ -10,11 +10,20 @@ import {
   ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, Between, In } from "typeorm";
-import { v4 as uuidv4 } from "uuid";
-import { Payment, PaymentStatus, Tenant, UserRole } from "../../entities";
+import { Repository, Between, In } from "typeorm";
+import {
+  Notification,
+  NotificationType,
+  Payment,
+  PaymentStatus,
+  Tenant,
+  TenantStatus,
+  User,
+  UserRole,
+} from "../../entities";
 import { CreatePaymentDto } from "./dto/create-payment.dto";
 import { UpdatePaymentDto } from "./dto/update-payment.dto";
+import { NotificationsService } from "../notifications/notifications.service";
 
 export interface PaymentSummary {
   totalExpected: number;
@@ -37,7 +46,232 @@ export class PaymentsService {
     private readonly paymentRepository: Repository<Payment>,
     @InjectRepository(Tenant)
     private readonly tenantRepository: Repository<Tenant>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(Notification)
+    private readonly notificationRepository: Repository<Notification>,
+    private readonly notificationsService: NotificationsService,
   ) {}
+
+  private getDaysInMonth(year: number, month: number): number {
+    return new Date(year, month, 0).getDate();
+  }
+
+  private getDueDate(year: number, month: number, dueDay: number): Date {
+    const daysInMonth = this.getDaysInMonth(year, month);
+    const safeDay = Math.max(1, Math.min(dueDay, daysInMonth));
+    return new Date(year, month - 1, safeDay);
+  }
+
+  private async getScopedActiveTenants(
+    userId: string,
+    userRole: UserRole,
+    propertyId?: string,
+  ): Promise<Tenant[]> {
+    const qb = this.tenantRepository
+      .createQueryBuilder("tenant")
+      .leftJoinAndSelect("tenant.property", "property")
+      .where("tenant.status = :status", { status: TenantStatus.ACTIVE });
+
+    if (propertyId) {
+      qb.andWhere("tenant.propertyId = :propertyId", { propertyId });
+    }
+
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      qb.andWhere("property.managerId = :managerId", { managerId: userId });
+    }
+
+    if (userRole !== UserRole.OWNER && userRole !== UserRole.GENERAL_MANAGER) {
+      throw new ForbiddenException(
+        "Only owner and general manager can access payments",
+      );
+    }
+
+    return qb.getMany();
+  }
+
+  private async ensureMonthlyPaymentsForScope(
+    month: number,
+    year: number,
+    userId: string,
+    userRole: UserRole,
+    propertyId?: string,
+  ): Promise<void> {
+    const tenants = await this.getScopedActiveTenants(userId, userRole, propertyId);
+    if (tenants.length === 0) {
+      return;
+    }
+
+    const tenantIds = tenants.map((tenant) => tenant.id);
+    const existing = await this.paymentRepository.find({
+      where: {
+        tenantId: In(tenantIds),
+        month,
+        year,
+      },
+      select: ["tenantId"],
+    });
+
+    const existingTenantIds = new Set(existing.map((payment) => payment.tenantId));
+    const missingTenants = tenants.filter(
+      (tenant) => !existingTenantIds.has(tenant.id),
+    );
+
+    if (missingTenants.length === 0) {
+      return;
+    }
+
+    const pendingPayments = missingTenants.map((tenant) => {
+      const dueDate = this.getDueDate(year, month, tenant.rentDueDay);
+      const amount = Number(tenant.monthlyRent) || 0;
+
+      return this.paymentRepository.create({
+        tenantId: tenant.id,
+        propertyId: tenant.propertyId,
+        amount,
+        currency: tenant.currency || "USD",
+        paymentDate: dueDate,
+        dueDate,
+        status: PaymentStatus.PENDING,
+        recordedById: userId,
+        month,
+        year,
+        isPartialPayment: false,
+        remainingBalance: amount,
+      });
+    });
+
+    await this.paymentRepository.save(pendingPayments);
+  }
+
+  private async getOverdueNotificationRecipients(propertyId: string): Promise<string[]> {
+    const propertyManagerRows = await this.paymentRepository
+      .createQueryBuilder("payment")
+      .innerJoin("payment.property", "property")
+      .select("property.managerId", "managerId")
+      .where("payment.propertyId = :propertyId", { propertyId })
+      .andWhere("property.managerId IS NOT NULL")
+      .limit(1)
+      .getRawMany<{ managerId: string }>();
+
+    const managerId = propertyManagerRows[0]?.managerId;
+    const ownerUsers = await this.userRepository.find({
+      where: { role: UserRole.OWNER, isActive: true },
+      select: ["id"],
+    });
+
+    const staffRows = await this.userRepository
+      .createQueryBuilder("user")
+      .innerJoin("user.assignedProperties", "property")
+      .where("property.id = :propertyId", { propertyId })
+      .andWhere("user.isActive = :isActive", { isActive: true })
+      .select("user.id", "id")
+      .getRawMany<{ id: string }>();
+
+    const recipientIds = new Set<string>(ownerUsers.map((owner) => owner.id));
+    if (managerId) {
+      recipientIds.add(managerId);
+    }
+    for (const staff of staffRows) {
+      if (staff.id) {
+        recipientIds.add(staff.id);
+      }
+    }
+
+    return Array.from(recipientIds);
+  }
+
+  private async notifyLongOverduePayment(payment: Payment): Promise<void> {
+    const dueDate = new Date(payment.dueDate);
+    const now = new Date();
+    const overdueDays = Math.floor(
+      (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    if (overdueDays < 30) {
+      return;
+    }
+
+    const recipients = await this.getOverdueNotificationRecipients(payment.propertyId);
+    if (recipients.length === 0) {
+      return;
+    }
+
+    const propertyName = payment.property?.name || "Property";
+    const tenantName = payment.tenant
+      ? `${payment.tenant.firstName} ${payment.tenant.lastName}`
+      : "Tenant";
+
+    await Promise.all(
+      recipients.map(async (recipientId) => {
+        const existingAlert = await this.notificationRepository.findOne({
+          where: {
+            userId: recipientId,
+            type: NotificationType.PAYMENT_OVERDUE,
+            relatedEntityId: payment.id,
+          },
+          select: ["id"],
+        });
+
+        if (existingAlert) {
+          return;
+        }
+
+        await this.notificationsService.sendNotification({
+          userId: recipientId,
+          title: "Long Overdue Payment Alert",
+          body: `${tenantName} at ${propertyName} is ${overdueDays} days overdue.`,
+          type: NotificationType.PAYMENT_OVERDUE,
+          relatedEntityId: payment.id,
+          relatedEntityType: "payment",
+          data: {
+            overdueDays: overdueDays.toString(),
+            tenantId: payment.tenantId,
+            propertyId: payment.propertyId,
+            amount: String(payment.remainingBalance || payment.amount || 0),
+          },
+        });
+      }),
+    );
+  }
+
+  private async refreshPaymentLifecycle(
+    userId: string,
+    userRole: UserRole,
+    month?: number,
+    year?: number,
+    propertyId?: string,
+  ): Promise<void> {
+    const now = new Date();
+    const targetMonth = month ?? now.getMonth() + 1;
+    const targetYear = year ?? now.getFullYear();
+
+    await this.ensureMonthlyPaymentsForScope(
+      targetMonth,
+      targetYear,
+      userId,
+      userRole,
+      propertyId,
+    );
+
+    await this.updateOverdueStatuses(userId, userRole);
+
+    const overdueQb = this.paymentRepository
+      .createQueryBuilder("payment")
+      .leftJoinAndSelect("payment.tenant", "tenant")
+      .leftJoinAndSelect("payment.property", "property")
+      .where("payment.status = :status", { status: PaymentStatus.OVERDUE });
+
+    const overduePayments = await this.applyRoleScope(
+      overdueQb,
+      userId,
+      userRole,
+    ).getMany();
+
+    for (const overduePayment of overduePayments) {
+      await this.notifyLongOverduePayment(overduePayment);
+    }
+  }
 
   private applyRoleScope(
     qb: ReturnType<Repository<Payment>["createQueryBuilder"]>,
@@ -169,6 +403,8 @@ export class PaymentsService {
    * Get all payments
    */
   async findAll(userId: string, userRole: UserRole): Promise<Payment[]> {
+    await this.refreshPaymentLifecycle(userId, userRole);
+
     const qb = this.paymentRepository
       .createQueryBuilder("payment")
       .leftJoinAndSelect("payment.tenant", "tenant")
@@ -188,6 +424,8 @@ export class PaymentsService {
     userId: string,
     userRole: UserRole,
   ): Promise<Payment[]> {
+    await this.refreshPaymentLifecycle(userId, userRole, month, year);
+
     const qb = this.paymentRepository
       .createQueryBuilder("payment")
       .leftJoinAndSelect("payment.tenant", "tenant")
@@ -208,6 +446,8 @@ export class PaymentsService {
     userId: string,
     userRole: UserRole,
   ): Promise<Payment[]> {
+    await this.refreshPaymentLifecycle(userId, userRole);
+
     const qb = this.paymentRepository
       .createQueryBuilder("payment")
       .leftJoinAndSelect("payment.property", "property")
@@ -244,6 +484,8 @@ export class PaymentsService {
         "Only owner and general manager can access payments",
       );
     }
+
+    await this.refreshPaymentLifecycle(userId, userRole, undefined, undefined, propertyId);
 
     return this.paymentRepository.find({
       where: { propertyId },
@@ -333,6 +575,8 @@ export class PaymentsService {
    * Get overdue payments
    */
   async findOverdue(userId: string, userRole: UserRole): Promise<Payment[]> {
+    await this.refreshPaymentLifecycle(userId, userRole);
+
     const today = new Date();
 
     const qb = this.paymentRepository
@@ -340,7 +584,7 @@ export class PaymentsService {
       .leftJoinAndSelect("payment.tenant", "tenant")
       .leftJoinAndSelect("payment.property", "property")
       .where("payment.dueDate < :today", { today })
-      .andWhere("payment.status = :status", { status: PaymentStatus.PENDING });
+      .andWhere("payment.status = :status", { status: PaymentStatus.OVERDUE });
 
     return this.applyRoleScope(qb, userId, userRole).getMany();
   }
@@ -378,6 +622,8 @@ export class PaymentsService {
         "Only owner and general manager can access payments",
       );
     }
+
+    await this.refreshPaymentLifecycle(userId, userRole, month, year, propertyId);
 
     const paymentsQb = this.paymentRepository
       .createQueryBuilder("payment")
