@@ -66,14 +66,6 @@ export class PaymentsController {
   }
 
   /**
-   * Get payment by ID
-   */
-  @Get(":id")
-  findById(@Param("id", ParseUUIDPipe) id: string, @Request() req: any) {
-    return this.paymentsService.findById(id, req.user.sub, req.user.role);
-  }
-
-  /**
    * Get payments by month and year
    */
   @Get("month/:year/:month")
@@ -158,6 +150,14 @@ export class PaymentsController {
       req.user.role,
       propertyId,
     );
+  }
+
+  /**
+   * Get payment by ID
+   */
+  @Get(":id")
+  findById(@Param("id", ParseUUIDPipe) id: string, @Request() req: any) {
+    return this.paymentsService.findById(id, req.user.sub, req.user.role);
   }
 
   /**
