@@ -4,13 +4,7 @@
 
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import {
-  Notification,
-  Payment,
-  Property,
-  Tenant,
-  User,
-} from "../../entities";
+import { Notification, Payment, Property, Tenant, User } from "../../entities";
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
 import { NotificationsModule } from "../notifications/notifications.module";

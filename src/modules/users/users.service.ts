@@ -76,10 +76,7 @@ export class UsersService {
             (assigned) => assigned.id === saved.id,
           );
           if (!alreadyAssigned) {
-            property.assignedStaff = [
-              ...(property.assignedStaff || []),
-              saved,
-            ];
+            property.assignedStaff = [...(property.assignedStaff || []), saved];
           }
         }
 

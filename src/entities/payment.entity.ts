@@ -2,7 +2,7 @@
  * Payment Entity
  */
 
-import { Entity, Column, ManyToOne, JoinColumn, Index } from "typeorm";
+import { Entity, Column, ManyToOne, JoinColumn, Index, DeleteDateColumn } from "typeorm";
 import { BaseEntity } from "./base.entity";
 import { Tenant } from "./tenant.entity";
 import { Property } from "./property.entity";
@@ -90,4 +90,7 @@ export class Payment extends BaseEntity {
     default: 0,
   })
   remainingBalance: number;
+
+  @DeleteDateColumn({ name: "deleted_at", nullable: true })
+  deletedAt?: Date | null;
 }

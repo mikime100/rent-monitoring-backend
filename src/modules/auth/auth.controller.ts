@@ -12,14 +12,17 @@ import {
   Request,
   HttpCode,
   HttpStatus,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { AuthService } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
+
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { ChangePasswordDto } from "./dto/change-password.dto";
 import { UpdateFcmTokenDto } from "./dto/update-fcm-token.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 
 @ApiTags("Authentication")
@@ -27,15 +30,7 @@ import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post("register")
-  @ApiOperation({ summary: "Register new admin account" })
-  async register(@Body() dto: RegisterDto) {
-    const result = await this.authService.register(dto);
-    return {
-      success: true,
-      data: result,
-    };
-  }
+
 
   @Post("login")
   @HttpCode(HttpStatus.OK)
@@ -70,14 +65,22 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Refresh access token" })
   async refresh(@Body() dto: RefreshTokenDto) {
-    // Decode refresh token to get user ID
+    // Verify refresh token JWT signature + expiry, then extract userId
+    let userId: string;
+    try {
+      const decoded = this.authService.verifyToken(dto.refreshToken);
+      userId = decoded.sub;
+    } catch {
+      throw new UnauthorizedException("Invalid refresh token");
+    }
+
     const tokens = await this.authService.refreshTokens(
-      dto.userId,
+      userId,
       dto.refreshToken,
     );
     return {
       success: true,
-      data: { tokens },
+      data: tokens,
     };
   }
 
@@ -136,6 +139,29 @@ export class AuthController {
     return {
       success: true,
       data: { valid: true },
+    };
+  }
+
+  @Post("forgot-password")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Request password reset OTP" })
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    await this.authService.forgotPassword(dto.email);
+    return {
+      success: true,
+      message:
+        "If an account with that email exists, a reset code has been sent.",
+    };
+  }
+
+  @Post("reset-password")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Reset password using OTP" })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.email, dto.otp, dto.newPassword);
+    return {
+      success: true,
+      message: "Password reset successfully. Please login with your new password.",
     };
   }
 }

@@ -5,7 +5,6 @@
 import {
   Injectable,
   UnauthorizedException,
-  ConflictException,
   BadRequestException,
   HttpException,
   HttpStatus,
@@ -18,7 +17,7 @@ import * as bcrypt from "bcrypt";
 import { createHash, randomUUID } from "crypto";
 import { User, UserRole } from "../../entities";
 import { LoginDto } from "./dto/login.dto";
-import { RegisterDto } from "./dto/register.dto";
+
 
 export interface JwtPayload {
   sub: string;
@@ -64,44 +63,26 @@ export class AuthService {
   }
 
   /**
-   * Register new admin user
+   * Verify a JWT token (checks signature + expiry) and return its payload.
+   * Used by the controller to extract and validate userId from the refresh token.
    */
-  async register(
-    dto: RegisterDto,
-  ): Promise<{ user: User; tokens: AuthTokens }> {
-    // Check if email already exists
-    const existingUser = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
-
-    if (existingUser) {
-      throw new ConflictException("Email already registered");
+  verifyToken(token: string): JwtPayload {
+    try {
+      const payload = this.jwtService.verify(token, {
+        secret: this.configService.get<string>("jwt.secret"),
+      });
+      if (!payload || !payload.sub) {
+        throw new UnauthorizedException("Invalid token payload");
+      }
+      return payload as JwtPayload;
+    } catch (error) {
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      throw new UnauthorizedException("Invalid or expired token");
     }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
-
-    // Create user
-    const user = this.userRepository.create({
-      email: dto.email.toLowerCase(),
-      firstName: dto.firstName,
-      lastName: dto.lastName,
-      password: hashedPassword,
-      phone: dto.phone,
-      role: UserRole.GENERAL_MANAGER, // New registrations are general managers
-      isActive: true,
-    });
-
-    await this.userRepository.save(user);
-
-    // Generate tokens
-    const tokens = await this.generateTokens(user);
-
-    // Save refresh token
-    await this.updateRefreshToken(user.id, tokens.refreshToken);
-
-    return { user, tokens };
   }
+
 
   /**
    * Login user
@@ -396,5 +377,155 @@ export class AuthService {
    */
   async updateFcmToken(userId: string, fcmToken: string): Promise<void> {
     await this.userRepository.update(userId, { fcmToken });
+  }
+
+  /**
+   * Forgot password — generate OTP and send via email
+   */
+  async forgotPassword(email: string): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user) {
+      // Don't reveal whether email exists
+      return;
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Hash the OTP for storage
+    const hashedOtp = await bcrypt.hash(otp, this.SALT_ROUNDS);
+
+    // Store OTP with 15 minute expiry
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await this.userRepository.update(user.id, {
+      resetOtp: hashedOtp,
+      resetOtpExpiresAt: expiresAt,
+    });
+
+    // Send OTP via email
+    await this.sendOtpEmail(user.email, otp, user.firstName);
+  }
+
+  /**
+   * Reset password using OTP
+   */
+  async resetPassword(
+    email: string,
+    otp: string,
+    newPassword: string,
+  ): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user || !user.resetOtp || !user.resetOtpExpiresAt) {
+      throw new BadRequestException(
+        "Invalid or expired reset code. Please request a new one.",
+      );
+    }
+
+    // Check if OTP has expired
+    if (new Date() > user.resetOtpExpiresAt) {
+      // Clear expired OTP
+      await this.userRepository.update(user.id, {
+        resetOtp: null,
+        resetOtpExpiresAt: null,
+      });
+      throw new BadRequestException(
+        "Reset code has expired. Please request a new one.",
+      );
+    }
+
+    // Verify OTP
+    const isOtpValid = await bcrypt.compare(otp, user.resetOtp);
+    if (!isOtpValid) {
+      throw new BadRequestException(
+        "Invalid reset code. Please check and try again.",
+      );
+    }
+
+    // Hash new password and clear OTP
+    const hashedPassword = await bcrypt.hash(newPassword, this.SALT_ROUNDS);
+    await this.userRepository.update(user.id, {
+      password: hashedPassword,
+      resetOtp: null,
+      resetOtpExpiresAt: null,
+      refreshToken: null,
+    });
+
+    // Invalidate all existing tokens
+    this.invalidateAllUserTokens(user.id);
+  }
+
+  /**
+   * Send OTP via email using nodemailer
+   * Falls back to console logging if email is not configured
+   */
+  private async sendOtpEmail(
+    email: string,
+    otp: string,
+    firstName: string,
+  ): Promise<void> {
+    const smtpHost = this.configService.get<string>("SMTP_HOST");
+    const smtpPort = this.configService.get<number>("SMTP_PORT");
+    const smtpUser = this.configService.get<string>("SMTP_USER");
+    const smtpPass = this.configService.get<string>("SMTP_PASS");
+    const smtpFrom =
+      this.configService.get<string>("SMTP_FROM") ||
+      "noreply@rentmanagement.com";
+
+    if (!smtpHost || !smtpUser || !smtpPass) {
+      // Fallback: log OTP to console for dev/testing
+      console.log(
+        `\n========================================`,
+      );
+      console.log(`  PASSWORD RESET OTP for ${email}`);
+      console.log(`  Code: ${otp}`);
+      console.log(`  Expires in 15 minutes`);
+      console.log(
+        `========================================\n`,
+      );
+      return;
+    }
+
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort || 587,
+        secure: (smtpPort || 587) === 465,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+
+      await transporter.sendMail({
+        from: smtpFrom,
+        to: email,
+        subject: "Password Reset Code — Rent Management",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+            <h2 style="color: #1a73e8; margin-bottom: 16px;">Password Reset</h2>
+            <p>Hi ${firstName},</p>
+            <p>You requested a password reset. Use the code below to reset your password:</p>
+            <div style="background: #f0f4ff; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0;">
+              <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #1a73e8;">${otp}</span>
+            </div>
+            <p style="color: #666; font-size: 14px;">This code expires in <strong>15 minutes</strong>.</p>
+            <p style="color: #666; font-size: 14px;">If you didn't request this, please ignore this email.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
+            <p style="color: #999; font-size: 12px;">Rent Management System</p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      console.error("Failed to send OTP email:", error);
+      // Still log OTP to console as fallback
+      console.log(`PASSWORD RESET OTP for ${email}: ${otp}`);
+    }
   }
 }

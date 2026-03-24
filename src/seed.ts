@@ -124,7 +124,7 @@ async function seed() {
       ],
     );
 
-    // PROPERTIES 
+    // PROPERTIES
     console.log("ðŸ   Seeding properties...");
     const prop1Id = uuidv4();
     const prop2Id = uuidv4();
@@ -172,7 +172,7 @@ async function seed() {
       [prop1Id, staff1Id, staff2Id, prop2Id],
     );
 
-    //  TENANTS 
+    //  TENANTS
     console.log("ðŸ§‘â€ðŸ¤â€ðŸ§‘  Seeding tenants...");
     const tenants = [
       {

@@ -70,6 +70,13 @@ export class User extends BaseEntity {
   @Exclude()
   refreshToken?: string | null;
 
+  @Column({ name: "reset_otp", nullable: true })
+  @Exclude()
+  resetOtp?: string | null;
+
+  @Column({ name: "reset_otp_expires_at", nullable: true })
+  resetOtpExpiresAt?: Date | null;
+
   @Column({ name: "last_login_at", nullable: true })
   lastLoginAt?: Date;
 

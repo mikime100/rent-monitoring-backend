@@ -15,6 +15,7 @@ import { NotificationsModule } from "./modules/notifications/notifications.modul
 import { HealthModule } from "./modules/health/health.module";
 import { ComplaintsModule } from "./modules/complaints/complaints.module";
 import { TaxSchedulesModule } from "./modules/tax-schedules/tax-schedules.module";
+import { ReportsModule } from "./modules/reports/reports.module";
 import configuration from "./config/configuration";
 
 @Module({
@@ -43,7 +44,11 @@ import configuration from "./config/configuration";
           password: configService.get<string>("database.password"),
           database: configService.get<string>("database.name"),
           entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
+          migrations: [__dirname + "/migrations/*{.ts,.js}"],
           synchronize: configService.get<boolean>("database.synchronize"),
+          migrationsRun: configService.get<boolean>("database.synchronize")
+            ? false
+            : true, // Auto-run migrations when synchronize is off (production)
           logging: configService.get<boolean>("database.logging"),
           ssl: useSsl ? { rejectUnauthorized } : false,
         };
@@ -61,6 +66,7 @@ import configuration from "./config/configuration";
     HealthModule,
     ComplaintsModule,
     TaxSchedulesModule,
+    ReportsModule,
   ],
 })
 export class AppModule {}

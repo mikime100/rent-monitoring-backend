@@ -7,6 +7,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -217,5 +218,17 @@ export class PaymentsController {
       req.user.sub,
       req.user.role,
     );
+  }
+
+  /**
+   * Delete payment (soft delete)
+   */
+  @Delete(":id")
+  async remove(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Request() req: any,
+  ) {
+    await this.paymentsService.remove(id, req.user.sub, req.user.role);
+    return { success: true, message: "Payment deleted" };
   }
 }

@@ -97,7 +97,11 @@ export class PaymentsService {
     userRole: UserRole,
     propertyId?: string,
   ): Promise<void> {
-    const tenants = await this.getScopedActiveTenants(userId, userRole, propertyId);
+    const tenants = await this.getScopedActiveTenants(
+      userId,
+      userRole,
+      propertyId,
+    );
     if (tenants.length === 0) {
       return;
     }
@@ -112,7 +116,9 @@ export class PaymentsService {
       select: ["tenantId"],
     });
 
-    const existingTenantIds = new Set(existing.map((payment) => payment.tenantId));
+    const existingTenantIds = new Set(
+      existing.map((payment) => payment.tenantId),
+    );
     const missingTenants = tenants.filter(
       (tenant) => !existingTenantIds.has(tenant.id),
     );
@@ -144,7 +150,9 @@ export class PaymentsService {
     await this.paymentRepository.save(pendingPayments);
   }
 
-  private async getOverdueNotificationRecipients(propertyId: string): Promise<string[]> {
+  private async getOverdueNotificationRecipients(
+    propertyId: string,
+  ): Promise<string[]> {
     const propertyManagerRows = await this.paymentRepository
       .createQueryBuilder("payment")
       .innerJoin("payment.property", "property")
@@ -192,7 +200,9 @@ export class PaymentsService {
       return;
     }
 
-    const recipients = await this.getOverdueNotificationRecipients(payment.propertyId);
+    const recipients = await this.getOverdueNotificationRecipients(
+      payment.propertyId,
+    );
     if (recipients.length === 0) {
       return;
     }
@@ -485,7 +495,13 @@ export class PaymentsService {
       );
     }
 
-    await this.refreshPaymentLifecycle(userId, userRole, undefined, undefined, propertyId);
+    await this.refreshPaymentLifecycle(
+      userId,
+      userRole,
+      undefined,
+      undefined,
+      propertyId,
+    );
 
     return this.paymentRepository.find({
       where: { propertyId },
@@ -497,7 +513,11 @@ export class PaymentsService {
   /**
    * Get payment by ID
    */
-  async findById(id: string, userId: string, userRole: UserRole): Promise<Payment> {
+  async findById(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<Payment> {
     const qb = this.paymentRepository
       .createQueryBuilder("payment")
       .leftJoinAndSelect("payment.tenant", "tenant")
@@ -623,7 +643,13 @@ export class PaymentsService {
       );
     }
 
-    await this.refreshPaymentLifecycle(userId, userRole, month, year, propertyId);
+    await this.refreshPaymentLifecycle(
+      userId,
+      userRole,
+      month,
+      year,
+      propertyId,
+    );
 
     const paymentsQb = this.paymentRepository
       .createQueryBuilder("payment")
@@ -780,5 +806,37 @@ export class PaymentsService {
     const timestamp = Date.now().toString(36).toUpperCase();
     const random = Math.random().toString(36).substring(2, 6).toUpperCase();
     return `RCP-${timestamp}-${random}`;
+  }
+
+  /**
+   * Delete payment (soft delete)
+   */
+  async remove(
+    id: string,
+    userId: string,
+    userRole: UserRole,
+  ): Promise<void> {
+    const payment = await this.paymentRepository.findOne({
+      where: { id },
+      relations: ["tenant", "tenant.property"],
+    });
+
+    if (!payment) {
+      throw new NotFoundException("Payment not found");
+    }
+
+    // Role-based access check
+    if (userRole === UserRole.GENERAL_MANAGER) {
+      const property = payment.tenant?.property;
+      if (!property || property.managerId !== userId) {
+        throw new ForbiddenException(
+          "You can only delete payments for properties you manage",
+        );
+      }
+    } else if (userRole !== UserRole.OWNER) {
+      throw new ForbiddenException("Access denied");
+    }
+
+    await this.paymentRepository.softRemove(payment);
   }
 }
