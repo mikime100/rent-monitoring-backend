@@ -24,6 +24,21 @@ export class UsersService {
     private readonly propertyRepository: Repository<Property>,
   ) {}
 
+  private async attachAssignedProperties(staffMembers: User[]): Promise<void> {
+    if (staffMembers.length === 0) {
+      return;
+    }
+
+    for (const member of staffMembers) {
+      member.assignedProperties = await this.propertyRepository
+        .createQueryBuilder("property")
+        .innerJoin("property_staff", "ps", "ps.property_id = property.id")
+        .where("ps.staff_id = :staffId", { staffId: member.id })
+        .orderBy("property.createdAt", "DESC")
+        .getMany();
+    }
+  }
+
   /**
    * Create a new staff member (General Manager only)
    */
@@ -86,12 +101,8 @@ export class UsersService {
       }
     }
 
-    const hydrated = await this.userRepository.findOne({
-      where: { id: saved.id },
-      relations: ["assignedProperties"],
-    });
-
-    const result = hydrated || saved;
+    const result = saved;
+    await this.attachAssignedProperties([result]);
     delete (result as any).password;
     return result;
   }
@@ -102,9 +113,10 @@ export class UsersService {
   async findStaffByManager(managerId: string): Promise<User[]> {
     const staff = await this.userRepository.find({
       where: { managerId, role: UserRole.STAFF },
-      relations: ["assignedProperties"],
       order: { createdAt: "DESC" },
     });
+
+    await this.attachAssignedProperties(staff);
 
     staff.forEach((member) => {
       delete (member as any).password;
@@ -119,9 +131,10 @@ export class UsersService {
   async findAllStaff(): Promise<User[]> {
     const staff = await this.userRepository.find({
       where: { role: UserRole.STAFF },
-      relations: ["assignedProperties"],
       order: { createdAt: "DESC" },
     });
+
+    await this.attachAssignedProperties(staff);
 
     staff.forEach((member) => {
       delete (member as any).password;
@@ -151,12 +164,13 @@ export class UsersService {
         "isActive",
         "createdAt",
       ],
-      relations: ["assignedProperties"],
     });
 
     if (!user) {
       throw new NotFoundException("User not found");
     }
+
+    await this.attachAssignedProperties([user]);
 
     return user;
   }
@@ -229,19 +243,24 @@ export class UsersService {
   async getStaffStats(staffId: string, managerId: string): Promise<any> {
     const staff = await this.userRepository.findOne({
       where: { id: staffId, managerId },
-      relations: ["assignedProperties", "assignedProperties.tenants"],
     });
 
     if (!staff) {
       throw new NotFoundException("Staff member not found");
     }
 
-    const propertyCount = staff.assignedProperties?.length ?? 0;
-    const tenantCount =
-      staff.assignedProperties?.reduce(
-        (sum, p) => sum + (p.tenants?.length ?? 0),
-        0,
-      ) ?? 0;
+    const properties = await this.propertyRepository
+      .createQueryBuilder("property")
+      .innerJoin("property_staff", "ps", "ps.property_id = property.id")
+      .leftJoinAndSelect("property.tenants", "tenant")
+      .where("ps.staff_id = :staffId", { staffId })
+      .getMany();
+
+    const propertyCount = properties.length;
+    const tenantCount = properties.reduce(
+      (sum, property) => sum + (property.tenants?.length ?? 0),
+      0,
+    );
 
     return {
       staffId,
