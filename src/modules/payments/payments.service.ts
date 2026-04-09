@@ -168,13 +168,14 @@ export class PaymentsService {
       select: ["id"],
     });
 
-    const staffRows = await this.userRepository
-      .createQueryBuilder("user")
-      .innerJoin("user.assignedProperties", "property")
-      .where("property.id = :propertyId", { propertyId })
-      .andWhere("user.isActive = :isActive", { isActive: true })
-      .select("user.id", "id")
-      .getRawMany<{ id: string }>();
+    const staffRows = await this.userRepository.query(
+      `SELECT DISTINCT u.id
+       FROM users u
+       INNER JOIN property_staff ps ON ps.staff_id = u.id
+       WHERE ps.property_id = $1
+         AND u.is_active = true`,
+      [propertyId],
+    );
 
     const recipientIds = new Set<string>(ownerUsers.map((owner) => owner.id));
     if (managerId) {
