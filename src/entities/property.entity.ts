@@ -66,7 +66,7 @@ export class Property extends BaseEntity {
   @Column({ name: "image_url", nullable: true })
   imageUrl?: string;
 
-  @ManyToMany(() => User)
+  @ManyToMany(() => User, (user) => user.assignedProperties)
   @JoinTable({
     name: "property_staff",
     joinColumn: { name: "property_id", referencedColumnName: "id" },
