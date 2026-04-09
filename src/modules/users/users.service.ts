@@ -102,7 +102,14 @@ export class UsersService {
   async findStaffByManager(managerId: string): Promise<User[]> {
     const staff = await this.userRepository.find({
       where: { managerId, role: UserRole.STAFF },
+      relations: ["assignedProperties"],
+      order: { createdAt: "DESC" },
     });
+
+    staff.forEach((member) => {
+      delete (member as any).password;
+    });
+
     return staff;
   }
 
@@ -112,7 +119,14 @@ export class UsersService {
   async findAllStaff(): Promise<User[]> {
     const staff = await this.userRepository.find({
       where: { role: UserRole.STAFF },
+      relations: ["assignedProperties"],
+      order: { createdAt: "DESC" },
     });
+
+    staff.forEach((member) => {
+      delete (member as any).password;
+    });
+
     return staff;
   }
 
