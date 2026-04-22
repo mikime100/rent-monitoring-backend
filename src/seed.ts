@@ -13,17 +13,23 @@ import "reflect-metadata";
 import { DataSource, QueryRunner } from "typeorm";
 import * as bcrypt from "bcrypt";
 import * as dotenv from "dotenv";
+import { createHash } from "crypto";
 import { v5 as uuidv5 } from "uuid";
 
 dotenv.config();
 
+const databaseUrl = process.env.DATABASE_URL;
+
 const AppDataSource = new DataSource({
   type: "postgres",
-  host: process.env.DB_HOST ?? "localhost",
-  port: parseInt(process.env.DB_PORT ?? "5432", 10),
-  username: process.env.DB_USERNAME ?? "postgres",
-  password: process.env.DB_PASSWORD ?? "0000",
-  database: process.env.DB_NAME ?? "rent_monitoring",
+  url: databaseUrl || undefined,
+  host: databaseUrl ? undefined : process.env.DB_HOST ?? "localhost",
+  port: databaseUrl
+    ? undefined
+    : parseInt(process.env.DB_PORT ?? "5432", 10),
+  username: databaseUrl ? undefined : process.env.DB_USERNAME ?? "postgres",
+  password: databaseUrl ? undefined : process.env.DB_PASSWORD ?? "0000",
+  database: databaseUrl ? undefined : process.env.DB_NAME ?? "rent_monitoring",
   synchronize: false,
   logging: false,
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
@@ -32,6 +38,7 @@ const AppDataSource = new DataSource({
 
 const DEMO_NAMESPACE = "79e10b77-7ec3-42b9-bd08-b22dc6a90a9f";
 const HISTORY_MONTHS = 12;
+const VISITOR_CODE_SALT_ROUNDS = 12;
 
 const stableId = (...parts: string[]): string =>
   uuidv5(parts.join(":"), DEMO_NAMESPACE);
@@ -345,6 +352,14 @@ type TenantAccountSeed = {
   unitNumber: string;
 };
 
+type TenantReminderPreferenceSeed = {
+  pushEnabled: boolean;
+  emailEnabled: boolean;
+  dueDayEnabled: boolean;
+  beforeDueDays: number[];
+  afterDueDays: number[];
+};
+
 const normalizeUnitNumber = (value: string): string =>
   value.trim().toLowerCase().replace(/\s+/g, " ");
 
@@ -393,6 +408,7 @@ async function upsertTenantReminderPreference(
   qr: QueryRunner,
   preferenceId: string,
   tenantAccountId: string,
+  preference: TenantReminderPreferenceSeed,
   nowIso: string,
 ): Promise<void> {
   await qr.query(
@@ -407,7 +423,7 @@ async function upsertTenantReminderPreference(
       created_at,
       updated_at
     )
-    VALUES ($1,$2,true,true,true,$3,$4,$5,$5)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
     ON CONFLICT (tenant_account_id)
     DO UPDATE SET
       push_enabled = EXCLUDED.push_enabled,
@@ -416,7 +432,16 @@ async function upsertTenantReminderPreference(
       before_due_days = EXCLUDED.before_due_days,
       after_due_days = EXCLUDED.after_due_days,
       updated_at = EXCLUDED.updated_at`,
-    [preferenceId, tenantAccountId, [7, 3, 1], [3, 7], nowIso],
+    [
+      preferenceId,
+      tenantAccountId,
+      preference.pushEnabled,
+      preference.emailEnabled,
+      preference.dueDayEnabled,
+      preference.beforeDueDays,
+      preference.afterDueDays,
+      nowIso,
+    ],
   );
 }
 
@@ -597,6 +622,245 @@ async function upsertTaxSchedule(
       schedule.notes,
       schedule.nextDueDate,
       nowIso,
+    ],
+  );
+}
+
+type VisitorInviteSeed = {
+  id: string;
+  tenantAccountId: string;
+  propertyId: string;
+  unitNumber: string;
+  shareToken: string;
+  expiresAt: string;
+  status: "active" | "revoked" | "expired";
+};
+
+type VisitorPassSeed = {
+  id: string;
+  inviteLinkId: string;
+  visitorName: string;
+  visitorPhone?: string;
+  visitorEmail?: string;
+  idNumber?: string;
+  vehiclePlate?: string;
+  photoUrl?: string;
+  verificationCode: string;
+  verificationCodeExpiresAt: string;
+  status: "pending" | "verified" | "expired" | "revoked";
+  usedAt?: string | null;
+  verifiedById?: string | null;
+};
+
+type VisitorVerificationLogSeed = {
+  id: string;
+  visitorPassId: string;
+  guardUserId: string;
+  action: "verified" | "denied";
+  channel: "manual" | "qr";
+  notes?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ReminderDispatchSeed = {
+  id: string;
+  tenantAccountId: string;
+  paymentId?: string;
+  channel: "push" | "email";
+  reminderType: string;
+  dueDate: string;
+  dedupeKey: string;
+  dispatchedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const hashShareToken = (token: string): string =>
+  createHash("sha256").update(token).digest("hex");
+
+async function upsertVisitorInviteLink(
+  qr: QueryRunner,
+  invite: VisitorInviteSeed,
+  nowIso: string,
+): Promise<void> {
+  await qr.query(
+    `INSERT INTO "visitor_invite_links" (
+      id,
+      tenant_account_id,
+      property_id,
+      unit_number,
+      share_token_hash,
+      expires_at,
+      status,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+    ON CONFLICT (id)
+    DO UPDATE SET
+      tenant_account_id = EXCLUDED.tenant_account_id,
+      property_id = EXCLUDED.property_id,
+      unit_number = EXCLUDED.unit_number,
+      share_token_hash = EXCLUDED.share_token_hash,
+      expires_at = EXCLUDED.expires_at,
+      status = EXCLUDED.status,
+      updated_at = EXCLUDED.updated_at`,
+    [
+      invite.id,
+      invite.tenantAccountId,
+      invite.propertyId,
+      invite.unitNumber,
+      hashShareToken(invite.shareToken),
+      invite.expiresAt,
+      invite.status,
+      nowIso,
+    ],
+  );
+}
+
+async function upsertVisitorPass(
+  qr: QueryRunner,
+  pass: VisitorPassSeed,
+  nowIso: string,
+): Promise<void> {
+  const verificationCodeHash = await bcrypt.hash(
+    pass.verificationCode,
+    VISITOR_CODE_SALT_ROUNDS,
+  );
+
+  await qr.query(
+    `INSERT INTO "visitor_passes" (
+      id,
+      invite_link_id,
+      visitor_name,
+      visitor_phone,
+      visitor_email,
+      id_number,
+      vehicle_plate,
+      photo_url,
+      verification_code_hash,
+      verification_code_expires_at,
+      status,
+      used_at,
+      verified_by_id,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+    ON CONFLICT (id)
+    DO UPDATE SET
+      invite_link_id = EXCLUDED.invite_link_id,
+      visitor_name = EXCLUDED.visitor_name,
+      visitor_phone = EXCLUDED.visitor_phone,
+      visitor_email = EXCLUDED.visitor_email,
+      id_number = EXCLUDED.id_number,
+      vehicle_plate = EXCLUDED.vehicle_plate,
+      photo_url = EXCLUDED.photo_url,
+      verification_code_hash = EXCLUDED.verification_code_hash,
+      verification_code_expires_at = EXCLUDED.verification_code_expires_at,
+      status = EXCLUDED.status,
+      used_at = EXCLUDED.used_at,
+      verified_by_id = EXCLUDED.verified_by_id,
+      updated_at = EXCLUDED.updated_at`,
+    [
+      pass.id,
+      pass.inviteLinkId,
+      pass.visitorName,
+      pass.visitorPhone ?? null,
+      pass.visitorEmail ?? null,
+      pass.idNumber ?? null,
+      pass.vehiclePlate ?? null,
+      pass.photoUrl ?? null,
+      verificationCodeHash,
+      pass.verificationCodeExpiresAt,
+      pass.status,
+      pass.usedAt ?? null,
+      pass.verifiedById ?? null,
+      nowIso,
+    ],
+  );
+}
+
+async function upsertVisitorVerificationLog(
+  qr: QueryRunner,
+  log: VisitorVerificationLogSeed,
+): Promise<void> {
+  await qr.query(
+    `INSERT INTO "visitor_verification_logs" (
+      id,
+      visitor_pass_id,
+      guard_user_id,
+      action,
+      channel,
+      notes,
+      metadata,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    ON CONFLICT (id)
+    DO UPDATE SET
+      visitor_pass_id = EXCLUDED.visitor_pass_id,
+      guard_user_id = EXCLUDED.guard_user_id,
+      action = EXCLUDED.action,
+      channel = EXCLUDED.channel,
+      notes = EXCLUDED.notes,
+      metadata = EXCLUDED.metadata,
+      updated_at = EXCLUDED.updated_at`,
+    [
+      log.id,
+      log.visitorPassId,
+      log.guardUserId,
+      log.action,
+      log.channel,
+      log.notes ?? null,
+      log.metadata ? JSON.stringify(log.metadata) : null,
+      log.createdAt,
+      log.updatedAt,
+    ],
+  );
+}
+
+async function upsertReminderDispatchLog(
+  qr: QueryRunner,
+  log: ReminderDispatchSeed,
+): Promise<void> {
+  await qr.query(
+    `INSERT INTO "reminder_dispatch_logs" (
+      id,
+      tenant_account_id,
+      payment_id,
+      channel,
+      reminder_type,
+      due_date,
+      dedupe_key,
+      dispatched_at,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    ON CONFLICT (dedupe_key)
+    DO UPDATE SET
+      tenant_account_id = EXCLUDED.tenant_account_id,
+      payment_id = EXCLUDED.payment_id,
+      channel = EXCLUDED.channel,
+      reminder_type = EXCLUDED.reminder_type,
+      due_date = EXCLUDED.due_date,
+      dispatched_at = EXCLUDED.dispatched_at,
+      updated_at = EXCLUDED.updated_at`,
+    [
+      log.id,
+      log.tenantAccountId,
+      log.paymentId ?? null,
+      log.channel,
+      log.reminderType,
+      log.dueDate,
+      log.dedupeKey,
+      log.dispatchedAt,
+      log.createdAt,
+      log.updatedAt,
     ],
   );
 }
@@ -913,6 +1177,55 @@ async function seed() {
       unitNumber: string;
       propertyName: string;
     }> = [];
+    const tenantAccountIdsByKey = new Map<string, string>();
+
+    const defaultReminderPreference: TenantReminderPreferenceSeed = {
+      pushEnabled: true,
+      emailEnabled: true,
+      dueDayEnabled: true,
+      beforeDueDays: [7, 3, 1],
+      afterDueDays: [3, 7],
+    };
+
+    const reminderPreferenceByTenantKey: Record<
+      string,
+      TenantReminderPreferenceSeed
+    > = {
+      "james-mwangi": {
+        ...defaultReminderPreference,
+        beforeDueDays: [10, 5, 2],
+      },
+      "grace-otieno": {
+        ...defaultReminderPreference,
+        emailEnabled: false,
+      },
+      "peter-kamau": {
+        ...defaultReminderPreference,
+        afterDueDays: [1, 4, 9],
+      },
+      "sarah-njeri": {
+        ...defaultReminderPreference,
+        dueDayEnabled: false,
+      },
+      "david-ochieng": {
+        ...defaultReminderPreference,
+        beforeDueDays: [7, 1],
+        afterDueDays: [2, 5],
+      },
+      "fatuma-ali": {
+        ...defaultReminderPreference,
+        pushEnabled: false,
+      },
+      "hassan-omar": {
+        ...defaultReminderPreference,
+        beforeDueDays: [14, 7, 3],
+      },
+      "amina-said": {
+        ...defaultReminderPreference,
+        emailEnabled: false,
+        beforeDueDays: [5, 1],
+      },
+    };
 
     for (const tenant of tenants) {
       const tenantUserId = await upsertUser(
@@ -946,8 +1259,11 @@ async function seed() {
         qr,
         stableId("tenant-reminder-preference", tenant.key),
         tenantAccountId,
+        reminderPreferenceByTenantKey[tenant.key] ?? defaultReminderPreference,
         nowIso,
       );
+
+      tenantAccountIdsByKey.set(tenant.key, tenantAccountId);
 
       tenantLoginRows.push({
         email: tenant.email,
@@ -957,6 +1273,16 @@ async function seed() {
         propertyName: propertyNameById.get(tenant.propertyId) || "Property",
       });
     }
+
+    const getTenantAccountId = (tenantKey: string): string => {
+      const id = tenantAccountIdsByKey.get(tenantKey);
+      if (!id) {
+        throw new Error(
+          `[seed] Missing tenant account for visitor/reminder seed: ${tenantKey}`,
+        );
+      }
+      return id;
+    };
 
     console.log("[seed] Inserting realistic payment history...");
 
@@ -1230,6 +1556,147 @@ async function seed() {
       await upsertComplaint(qr, complaint);
     }
 
+    console.log("[seed] Upserting visitor access data...");
+
+    const visitorInviteSeeds: VisitorInviteSeed[] = [
+      {
+        id: stableId("visitor-invite", "james-main-link"),
+        tenantAccountId: getTenantAccountId("james-mwangi"),
+        propertyId: properties[0].id,
+        unitNumber: "A1",
+        shareToken: "seed-link-james-a1-2026",
+        expiresAt: new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString(),
+        status: "active",
+      },
+      {
+        id: stableId("visitor-invite", "grace-family-link"),
+        tenantAccountId: getTenantAccountId("grace-otieno"),
+        propertyId: properties[0].id,
+        unitNumber: "A2",
+        shareToken: "seed-link-grace-a2-2026",
+        expiresAt: new Date(now.getTime() + 36 * 60 * 60 * 1000).toISOString(),
+        status: "active",
+      },
+      {
+        id: stableId("visitor-invite", "hassan-expired-link"),
+        tenantAccountId: getTenantAccountId("hassan-omar"),
+        propertyId: properties[1].id,
+        unitNumber: "102",
+        shareToken: "seed-link-hassan-102-old",
+        expiresAt: new Date(now.getTime() - 6 * 60 * 60 * 1000).toISOString(),
+        status: "expired",
+      },
+    ];
+
+    for (const invite of visitorInviteSeeds) {
+      await upsertVisitorInviteLink(qr, invite, nowIso);
+    }
+
+    const visitorPassSeeds: VisitorPassSeed[] = [
+      {
+        id: stableId("visitor-pass", "john-doe-james"),
+        inviteLinkId: visitorInviteSeeds[0].id,
+        visitorName: "John Doe",
+        visitorPhone: "+254700555001",
+        visitorEmail: "john.doe.guest@example.com",
+        idNumber: "ID-230045",
+        vehiclePlate: "KDA 234P",
+        photoUrl:
+          "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=800&q=80",
+        verificationCode: "246810",
+        verificationCodeExpiresAt: new Date(
+          now.getTime() + 18 * 60 * 60 * 1000,
+        ).toISOString(),
+        status: "verified",
+        usedAt: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+        verifiedById: guardSamuelId,
+      },
+      {
+        id: stableId("visitor-pass", "mary-grace"),
+        inviteLinkId: visitorInviteSeeds[1].id,
+        visitorName: "Mary Wanjiku",
+        visitorPhone: "+254700555002",
+        visitorEmail: "mary.wanjiku.guest@example.com",
+        idNumber: "ID-991223",
+        vehiclePlate: "KBX 901T",
+        photoUrl:
+          "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=800&q=80",
+        verificationCode: "135790",
+        verificationCodeExpiresAt: new Date(
+          now.getTime() + 20 * 60 * 60 * 1000,
+        ).toISOString(),
+        status: "pending",
+      },
+      {
+        id: stableId("visitor-pass", "ali-hassan-old"),
+        inviteLinkId: visitorInviteSeeds[2].id,
+        visitorName: "Ali Hassan",
+        visitorPhone: "+254700555003",
+        visitorEmail: "ali.hassan.guest@example.com",
+        idNumber: "ID-776510",
+        vehiclePlate: "KCH 110M",
+        verificationCode: "112233",
+        verificationCodeExpiresAt: new Date(
+          now.getTime() - 10 * 60 * 60 * 1000,
+        ).toISOString(),
+        status: "expired",
+      },
+    ];
+
+    for (const pass of visitorPassSeeds) {
+      await upsertVisitorPass(qr, pass, nowIso);
+    }
+
+    const visitorVerificationLogSeeds: VisitorVerificationLogSeed[] = [
+      {
+        id: stableId("visitor-log", "john-doe-verified"),
+        visitorPassId: visitorPassSeeds[0].id,
+        guardUserId: guardSamuelId,
+        action: "verified",
+        channel: "manual",
+        notes: "ID matched and tenant confirmed via intercom.",
+        metadata: {
+          gate: "Main Gate",
+          idChecked: true,
+          verifier: "Samuel Kariuki",
+        },
+        createdAt: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+        updatedAt: nowIso,
+      },
+      {
+        id: stableId("visitor-log", "mary-first-denied"),
+        visitorPassId: visitorPassSeeds[1].id,
+        guardUserId: guardSamuelId,
+        action: "denied",
+        channel: "qr",
+        notes: "Incorrect verification code entered once.",
+        metadata: {
+          gate: "Side Gate",
+          attempt: 1,
+        },
+        createdAt: new Date(now.getTime() - 45 * 60 * 1000).toISOString(),
+        updatedAt: nowIso,
+      },
+      {
+        id: stableId("visitor-log", "ali-expired-denied"),
+        visitorPassId: visitorPassSeeds[2].id,
+        guardUserId: guardSamuelId,
+        action: "denied",
+        channel: "manual",
+        notes: "Pass was expired at time of arrival.",
+        metadata: {
+          gate: "Main Gate",
+          expired: true,
+        },
+        createdAt: new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+        updatedAt: nowIso,
+      },
+    ];
+
+    for (const log of visitorVerificationLogSeeds) {
+      await upsertVisitorVerificationLog(qr, log);
+    }
+
     console.log("[seed] Inserting notifications...");
 
     const hoursAgo = (hours: number): string =>
@@ -1369,6 +1836,106 @@ async function seed() {
       await upsertTaxSchedule(qr, schedule, nowIso);
     }
 
+    console.log("[seed] Upserting reminder dispatch history...");
+
+    const previousPeriod = shiftMonth(currentYear, currentMonth, 1);
+    const previousDueDate = buildDueDate(
+      previousPeriod.year,
+      previousPeriod.month,
+      5,
+    );
+    const previousDueDateIso = toIsoDate(previousDueDate);
+
+    const olderPeriod = shiftMonth(currentYear, currentMonth, 2);
+    const olderDueDate = buildDueDate(olderPeriod.year, olderPeriod.month, 5);
+    const olderDueDateIso = toIsoDate(olderDueDate);
+
+    const beforeDueDispatch = new Date(previousDueDate);
+    beforeDueDispatch.setUTCDate(beforeDueDispatch.getUTCDate() - 3);
+    beforeDueDispatch.setUTCHours(8, 15, 0, 0);
+
+    const dueDayDispatch = new Date(previousDueDate);
+    dueDayDispatch.setUTCHours(9, 30, 0, 0);
+
+    const overdueDispatch = new Date(olderDueDate);
+    overdueDispatch.setUTCDate(overdueDispatch.getUTCDate() + 7);
+    overdueDispatch.setUTCHours(10, 5, 0, 0);
+
+    const reminderDispatchSeeds: ReminderDispatchSeed[] = [
+      {
+        id: stableId("reminder-log", "james", "before_due_3", "push"),
+        tenantAccountId: getTenantAccountId("james-mwangi"),
+        paymentId: stableId(
+          "payment",
+          "james-mwangi",
+          `${previousPeriod.year}-${pad2(previousPeriod.month)}`,
+          "monthly",
+        ),
+        channel: "push",
+        reminderType: "before_due_3",
+        dueDate: previousDueDateIso,
+        dedupeKey: `${getTenantAccountId("james-mwangi")}:${previousDueDateIso}:before_due_3:push`,
+        dispatchedAt: beforeDueDispatch.toISOString(),
+        createdAt: beforeDueDispatch.toISOString(),
+        updatedAt: nowIso,
+      },
+      {
+        id: stableId("reminder-log", "james", "before_due_3", "email"),
+        tenantAccountId: getTenantAccountId("james-mwangi"),
+        paymentId: stableId(
+          "payment",
+          "james-mwangi",
+          `${previousPeriod.year}-${pad2(previousPeriod.month)}`,
+          "monthly",
+        ),
+        channel: "email",
+        reminderType: "before_due_3",
+        dueDate: previousDueDateIso,
+        dedupeKey: `${getTenantAccountId("james-mwangi")}:${previousDueDateIso}:before_due_3:email`,
+        dispatchedAt: beforeDueDispatch.toISOString(),
+        createdAt: beforeDueDispatch.toISOString(),
+        updatedAt: nowIso,
+      },
+      {
+        id: stableId("reminder-log", "sarah", "due_day", "push"),
+        tenantAccountId: getTenantAccountId("sarah-njeri"),
+        paymentId: stableId(
+          "payment",
+          "sarah-njeri",
+          `${previousPeriod.year}-${pad2(previousPeriod.month)}`,
+          "monthly",
+        ),
+        channel: "push",
+        reminderType: "due_day",
+        dueDate: previousDueDateIso,
+        dedupeKey: `${getTenantAccountId("sarah-njeri")}:${previousDueDateIso}:due_day:push`,
+        dispatchedAt: dueDayDispatch.toISOString(),
+        createdAt: dueDayDispatch.toISOString(),
+        updatedAt: nowIso,
+      },
+      {
+        id: stableId("reminder-log", "hassan", "overdue_7", "push"),
+        tenantAccountId: getTenantAccountId("hassan-omar"),
+        paymentId: stableId(
+          "payment",
+          "hassan-omar",
+          `${olderPeriod.year}-${pad2(olderPeriod.month)}`,
+          "monthly",
+        ),
+        channel: "push",
+        reminderType: "overdue_7",
+        dueDate: olderDueDateIso,
+        dedupeKey: `${getTenantAccountId("hassan-omar")}:${olderDueDateIso}:overdue_7:push`,
+        dispatchedAt: overdueDispatch.toISOString(),
+        createdAt: overdueDispatch.toISOString(),
+        updatedAt: nowIso,
+      },
+    ];
+
+    for (const reminderLog of reminderDispatchSeeds) {
+      await upsertReminderDispatchLog(qr, reminderLog);
+    }
+
     await qr.commitTransaction();
 
     const paymentCountRows = await AppDataSource.query(
@@ -1390,10 +1957,29 @@ async function seed() {
         `    ${tenantLogin.email} (${tenantLogin.tenantName}, Unit ${tenantLogin.unitNumber} - ${tenantLogin.propertyName})`,
       );
     }
+    console.log("  Visitor demo credentials:");
+    console.log(
+      `    Invite token (James, Unit A1): ${visitorInviteSeeds[0].shareToken}`,
+    );
+    console.log(
+      `    Invite token (Grace, Unit A2): ${visitorInviteSeeds[1].shareToken}`,
+    );
+    console.log(
+      `    Pending visitor verification code (Mary Wanjiku): ${visitorPassSeeds[1].verificationCode}`,
+    );
+    console.log(
+      `    Verified sample code (John Doe): ${visitorPassSeeds[0].verificationCode}`,
+    );
     console.log("-------------------------------------------");
     console.log(`History months inserted target: ${HISTORY_MONTHS}`);
     console.log(`Payments inserted this run: ${insertedPayments}`);
     console.log(`Notifications inserted this run: ${insertedNotifications}`);
+    console.log(`Visitor invite links seeded: ${visitorInviteSeeds.length}`);
+    console.log(`Visitor passes seeded: ${visitorPassSeeds.length}`);
+    console.log(
+      `Visitor verification logs seeded: ${visitorVerificationLogSeeds.length}`,
+    );
+    console.log(`Reminder dispatch logs seeded: ${reminderDispatchSeeds.length}`);
     console.log(
       `Total payments recorded by GM in DB: ${paymentCountRows[0]?.count ?? 0}`,
     );
