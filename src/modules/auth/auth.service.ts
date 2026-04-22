@@ -18,7 +18,6 @@ import { createHash, randomUUID } from "crypto";
 import { User, UserRole } from "../../entities";
 import { LoginDto } from "./dto/login.dto";
 
-
 export interface JwtPayload {
   sub: string;
   email: string;
@@ -36,11 +35,17 @@ export interface AuthTokens {
   expiresAt: number;
 }
 
+export type LoginResult =
+  | { user: User; tokens: AuthTokens }
+  | { requiresEmailVerification: true; email: string };
+
 @Injectable()
 export class AuthService {
   private readonly SALT_ROUNDS = 12;
   private readonly MAX_FAILED_LOGIN_ATTEMPTS = 5;
   private readonly LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+  private readonly EMAIL_VERIFICATION_OTP_TTL_MS = 15 * 60 * 1000;
+  private readonly EMAIL_OTP_RESEND_COOLDOWN_MS = 60 * 1000;
   private readonly accessExpiresIn: string;
   private readonly refreshExpiresIn: string;
   private readonly loginAttemptState = new Map<
@@ -83,11 +88,10 @@ export class AuthService {
     }
   }
 
-
   /**
    * Login user
    */
-  async login(dto: LoginDto): Promise<{ user: User; tokens: AuthTokens }> {
+  async login(dto: LoginDto): Promise<LoginResult> {
     const loginKey = dto.email.toLowerCase().trim();
     this.assertLoginNotLocked(loginKey);
 
@@ -113,6 +117,11 @@ export class AuthService {
 
     // Successful login resets failed-attempt counter
     this.loginAttemptState.delete(loginKey);
+
+    if (user.role === UserRole.TENANT && !user.emailVerifiedAt) {
+      await this.issueEmailVerificationOtp(user);
+      return { requiresEmailVerification: true, email: user.email };
+    }
 
     // Generate tokens
     const tokens = await this.generateTokens(user);
@@ -173,7 +182,8 @@ export class AuthService {
     await this.userRepository.update(userId, { refreshToken: null });
 
     if (accessTokenJti) {
-      const fallbackExp = this.currentUnixTimestamp() + this.accessTokenTtlSeconds();
+      const fallbackExp =
+        this.currentUnixTimestamp() + this.accessTokenTtlSeconds();
       this.revokeAccessToken(accessTokenJti, accessTokenExp ?? fallbackExp);
     }
   }
@@ -287,7 +297,10 @@ export class AuthService {
   }
 
   private accessTokenTtlSeconds(): number {
-    return Math.max(1, Math.floor(this.parseExpiresIn(this.accessExpiresIn) / 1000));
+    return Math.max(
+      1,
+      Math.floor(this.parseExpiresIn(this.accessExpiresIn) / 1000),
+    );
   }
 
   private currentUnixTimestamp(): number {
@@ -461,6 +474,105 @@ export class AuthService {
   }
 
   /**
+   * Request email verification OTP for tenant accounts
+   */
+  async requestEmailVerification(
+    email: string,
+    password?: string,
+  ): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user || user.role !== UserRole.TENANT) {
+      // Don't reveal whether email exists
+      return;
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedException("Account is deactivated");
+    }
+
+    if (password) {
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        throw new UnauthorizedException("Invalid credentials");
+      }
+    }
+
+    if (user.emailVerifiedAt) {
+      return;
+    }
+
+    await this.issueEmailVerificationOtp(user);
+  }
+
+  /**
+   * Verify email OTP for tenant accounts
+   */
+  async verifyEmailOtp(email: string, otp: string): Promise<void> {
+    const user = await this.userRepository.findOne({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user || user.role !== UserRole.TENANT) {
+      throw new BadRequestException("Invalid verification request");
+    }
+
+    if (user.emailVerifiedAt) {
+      return;
+    }
+
+    if (!user.emailVerificationOtp || !user.emailVerificationOtpExpiresAt) {
+      throw new BadRequestException("Invalid or expired verification code");
+    }
+
+    if (new Date() > user.emailVerificationOtpExpiresAt) {
+      await this.userRepository.update(user.id, {
+        emailVerificationOtp: null,
+        emailVerificationOtpExpiresAt: null,
+      });
+      throw new BadRequestException("Verification code has expired");
+    }
+
+    const isOtpValid = await bcrypt.compare(otp, user.emailVerificationOtp);
+    if (!isOtpValid) {
+      throw new BadRequestException("Invalid verification code");
+    }
+
+    await this.userRepository.update(user.id, {
+      emailVerifiedAt: new Date(),
+      emailVerificationOtp: null,
+      emailVerificationOtpExpiresAt: null,
+      emailVerificationSentAt: null,
+    });
+  }
+
+  private async issueEmailVerificationOtp(user: User): Promise<void> {
+    const now = Date.now();
+    const lastSentAt = user.emailVerificationSentAt?.getTime() ?? 0;
+    const otpStillValid =
+      user.emailVerificationOtpExpiresAt &&
+      user.emailVerificationOtpExpiresAt > new Date();
+
+    if (otpStillValid && now - lastSentAt < this.EMAIL_OTP_RESEND_COOLDOWN_MS) {
+      return;
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedOtp = await bcrypt.hash(otp, this.SALT_ROUNDS);
+    const expiresAt = new Date(now + this.EMAIL_VERIFICATION_OTP_TTL_MS);
+
+    await this.userRepository.update(user.id, {
+      emailVerificationOtp: hashedOtp,
+      emailVerificationOtpExpiresAt: expiresAt,
+      emailVerificationSentAt: new Date(),
+    });
+
+    await this.sendEmailVerificationOtp(user.email, otp, user.firstName);
+  }
+
+  /**
    * Send OTP via email using nodemailer
    * Falls back to console logging if email is not configured
    */
@@ -479,15 +591,11 @@ export class AuthService {
 
     if (!smtpHost || !smtpUser || !smtpPass) {
       // Fallback: log OTP to console for dev/testing
-      console.log(
-        `\n========================================`,
-      );
+      console.log(`\n========================================`);
       console.log(`  PASSWORD RESET OTP for ${email}`);
       console.log(`  Code: ${otp}`);
       console.log(`  Expires in 15 minutes`);
-      console.log(
-        `========================================\n`,
-      );
+      console.log(`========================================\n`);
       return;
     }
 
@@ -526,6 +634,65 @@ export class AuthService {
       console.error("Failed to send OTP email:", error);
       // Still log OTP to console as fallback
       console.log(`PASSWORD RESET OTP for ${email}: ${otp}`);
+    }
+  }
+
+  private async sendEmailVerificationOtp(
+    email: string,
+    otp: string,
+    firstName: string,
+  ): Promise<void> {
+    const smtpHost = this.configService.get<string>("SMTP_HOST");
+    const smtpPort = this.configService.get<number>("SMTP_PORT");
+    const smtpUser = this.configService.get<string>("SMTP_USER");
+    const smtpPass = this.configService.get<string>("SMTP_PASS");
+    const smtpFrom =
+      this.configService.get<string>("SMTP_FROM") ||
+      "noreply@rentmanagement.com";
+
+    if (!smtpHost || !smtpUser || !smtpPass) {
+      console.log(`\n========================================`);
+      console.log(`  EMAIL VERIFICATION OTP for ${email}`);
+      console.log(`  Code: ${otp}`);
+      console.log(`  Expires in 15 minutes`);
+      console.log(`========================================\n`);
+      return;
+    }
+
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort || 587,
+        secure: (smtpPort || 587) === 465,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+
+      await transporter.sendMail({
+        from: smtpFrom,
+        to: email,
+        subject: "Verify Your Email — Rent Management",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+            <h2 style="color: #1a73e8; margin-bottom: 16px;">Verify Your Email</h2>
+            <p>Hi ${firstName},</p>
+            <p>Use the code below to verify your email address:</p>
+            <div style="background: #f0f4ff; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0;">
+              <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #1a73e8;">${otp}</span>
+            </div>
+            <p style="color: #666; font-size: 14px;">This code expires in <strong>15 minutes</strong>.</p>
+            <p style="color: #666; font-size: 14px;">If you didn't request this, please ignore this email.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
+            <p style="color: #999; font-size: 12px;">Rent Management System</p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      console.error("Failed to send verification OTP email:", error);
+      console.log(`EMAIL VERIFICATION OTP for ${email}: ${otp}`);
     }
   }
 }

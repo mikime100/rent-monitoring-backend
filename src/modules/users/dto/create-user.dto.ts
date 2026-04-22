@@ -12,7 +12,9 @@ import {
   IsArray,
   ArrayUnique,
   IsUUID,
-} from 'class-validator';
+  IsEnum,
+} from "class-validator";
+import { UserRole } from "../../../entities";
 
 export class CreateUserDto {
   @IsEmail()
@@ -24,7 +26,9 @@ export class CreateUserDto {
   password: string;
 
   @IsString()
-  @Matches(/^(\+?[1-9]\d{9,14}|0\d{9,14})$/, { message: 'Invalid phone number format' })
+  @Matches(/^(\+?[1-9]\d{9,14}|0\d{9,14})$/, {
+    message: "Invalid phone number format",
+  })
   phone: string;
 
   @IsString()
@@ -40,6 +44,10 @@ export class CreateUserDto {
   @IsOptional()
   @IsArray()
   @ArrayUnique()
-  @IsUUID('4', { each: true })
+  @IsUUID("4", { each: true })
   assignedPropertyIds?: string[];
+
+  @IsOptional()
+  @IsEnum(UserRole)
+  role?: UserRole;
 }

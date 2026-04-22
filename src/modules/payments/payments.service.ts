@@ -812,11 +812,7 @@ export class PaymentsService {
   /**
    * Delete payment (soft delete)
    */
-  async remove(
-    id: string,
-    userId: string,
-    userRole: UserRole,
-  ): Promise<void> {
+  async remove(id: string, userId: string, userRole: UserRole): Promise<void> {
     const payment = await this.paymentRepository.findOne({
       where: { id },
       relations: ["tenant", "tenant.property"],

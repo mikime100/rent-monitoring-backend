@@ -23,6 +23,8 @@ import { ChangePasswordDto } from "./dto/change-password.dto";
 import { UpdateFcmTokenDto } from "./dto/update-fcm-token.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
+import { RequestEmailVerificationDto } from "./dto/request-email-verification.dto";
+import { VerifyEmailDto } from "./dto/verify-email.dto";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 
 @ApiTags("Authentication")
@@ -30,13 +32,26 @@ import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-
-
   @Post("login")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Login with email and password" })
   async login(@Body() dto: LoginDto) {
     const result = await this.authService.login(dto);
+
+    if ("requiresEmailVerification" in result) {
+      return {
+        success: false,
+        message: "Email verification required",
+        errors: [
+          {
+            code: "EMAIL_VERIFICATION_REQUIRED",
+            message: "Email verification required",
+          },
+        ],
+        data: { email: result.email },
+      };
+    }
+
     return {
       success: true,
       data: result,
@@ -154,6 +169,28 @@ export class AuthController {
     };
   }
 
+  @Post("request-email-verification")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Request email verification OTP" })
+  async requestEmailVerification(@Body() dto: RequestEmailVerificationDto) {
+    await this.authService.requestEmailVerification(dto.email, dto.password);
+    return {
+      success: true,
+      message: "If the account is eligible, a verification code has been sent.",
+    };
+  }
+
+  @Post("verify-email")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Verify email using OTP" })
+  async verifyEmail(@Body() dto: VerifyEmailDto) {
+    await this.authService.verifyEmailOtp(dto.email, dto.otp);
+    return {
+      success: true,
+      message: "Email verified successfully. Please login.",
+    };
+  }
+
   @Post("reset-password")
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Reset password using OTP" })
@@ -161,7 +198,8 @@ export class AuthController {
     await this.authService.resetPassword(dto.email, dto.otp, dto.newPassword);
     return {
       success: true,
-      message: "Password reset successfully. Please login with your new password.",
+      message:
+        "Password reset successfully. Please login with your new password.",
     };
   }
 }

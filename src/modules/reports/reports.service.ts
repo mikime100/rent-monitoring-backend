@@ -5,7 +5,7 @@
 
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, Between } from "typeorm";
+import { Repository, Between, In } from "typeorm";
 import {
   Property,
   Tenant,
@@ -53,10 +53,7 @@ export class ReportsService {
   /**
    * Get aggregated report summary
    */
-  async getSummary(
-    userId: string,
-    userRole: UserRole,
-  ): Promise<ReportSummary> {
+  async getSummary(userId: string, userRole: UserRole): Promise<ReportSummary> {
     const now = new Date();
     const curMonth = now.getMonth() + 1;
     const curYear = now.getFullYear();
@@ -86,11 +83,15 @@ export class ReportsService {
     let totalStaff = 0;
     if (userRole === UserRole.OWNER) {
       totalStaff = await this.userRepository.count({
-        where: { role: UserRole.STAFF, isActive: true },
+        where: { role: In([UserRole.STAFF, UserRole.GUARD]), isActive: true },
       });
     } else if (userRole === UserRole.GENERAL_MANAGER) {
       totalStaff = await this.userRepository.count({
-        where: { role: UserRole.STAFF, managerId: userId, isActive: true },
+        where: {
+          role: In([UserRole.STAFF, UserRole.GUARD]),
+          managerId: userId,
+          isActive: true,
+        },
       });
     }
 
@@ -141,12 +142,11 @@ export class ReportsService {
     // Collection rate
     const totalMonthCount = paidCount + pendingPayments + overduePayments;
     const collectionRate =
-      totalMonthCount > 0
-        ? Math.round((paidCount / totalMonthCount) * 100)
-        : 0;
+      totalMonthCount > 0 ? Math.round((paidCount / totalMonthCount) * 100) : 0;
 
     // Complaint stats
-    const complaintQb = this.complaintRepository.createQueryBuilder("complaint");
+    const complaintQb =
+      this.complaintRepository.createQueryBuilder("complaint");
     if (userRole === UserRole.GENERAL_MANAGER) {
       complaintQb.where("complaint.propertyId IN (:...propertyIds)", {
         propertyIds: propertyIds.length > 0 ? propertyIds : ["none"],
@@ -156,14 +156,12 @@ export class ReportsService {
     const complaints = await complaintQb.getMany();
     const complaintStats = {
       total: complaints.length,
-      open: complaints.filter((c) => c.status === ComplaintStatus.OPEN)
-        .length,
+      open: complaints.filter((c) => c.status === ComplaintStatus.OPEN).length,
       inProgress: complaints.filter(
         (c) => c.status === ComplaintStatus.IN_PROGRESS,
       ).length,
-      resolved: complaints.filter(
-        (c) => c.status === ComplaintStatus.RESOLVED,
-      ).length,
+      resolved: complaints.filter((c) => c.status === ComplaintStatus.RESOLVED)
+        .length,
     };
 
     return {

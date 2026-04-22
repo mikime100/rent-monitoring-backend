@@ -24,6 +24,14 @@ export class UsersService {
     private readonly propertyRepository: Repository<Property>,
   ) {}
 
+  private readonly workerRoles: UserRole[] = [UserRole.STAFF, UserRole.GUARD];
+
+  private isWorkerRole(
+    role?: UserRole,
+  ): role is UserRole.STAFF | UserRole.GUARD {
+    return role === UserRole.STAFF || role === UserRole.GUARD;
+  }
+
   private async attachAssignedProperties(staffMembers: User[]): Promise<void> {
     if (staffMembers.length === 0) {
       return;
@@ -40,7 +48,7 @@ export class UsersService {
   }
 
   /**
-   * Create a new staff member (General Manager only)
+   * Create a new staff-like worker (staff or guard) (General Manager only)
    */
   async createStaff(dto: CreateUserDto, managerId: string): Promise<User> {
     const existingUser = await this.userRepository.findOne({
@@ -74,10 +82,21 @@ export class UsersService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 12);
 
+    if (dto.role && !this.isWorkerRole(dto.role)) {
+      throw new ForbiddenException(
+        "General manager can only create staff or guard accounts",
+      );
+    }
+
+    const workerRole = dto.role ?? UserRole.STAFF;
+
     const staffMember = this.userRepository.create({
-      ...dto,
+      email: dto.email.toLowerCase(),
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
       password: hashedPassword,
-      role: UserRole.STAFF,
+      role: workerRole,
       managerId,
       isActive: true,
     });
@@ -108,11 +127,11 @@ export class UsersService {
   }
 
   /**
-   * Get all staff for manager
+   * Get all staff-like workers for manager
    */
   async findStaffByManager(managerId: string): Promise<User[]> {
     const staff = await this.userRepository.find({
-      where: { managerId, role: UserRole.STAFF },
+      where: { managerId, role: In(this.workerRoles) },
       order: { createdAt: "DESC" },
     });
 
@@ -126,11 +145,11 @@ export class UsersService {
   }
 
   /**
-   * Get ALL staff users (Owner view)
+   * Get ALL staff-like workers (Owner view)
    */
   async findAllStaff(): Promise<User[]> {
     const staff = await this.userRepository.find({
-      where: { role: UserRole.STAFF },
+      where: { role: In(this.workerRoles) },
       order: { createdAt: "DESC" },
     });
 
@@ -184,7 +203,7 @@ export class UsersService {
     managerId: string,
   ): Promise<User> {
     const staff = await this.userRepository.findOne({
-      where: { id, managerId, role: UserRole.STAFF },
+      where: { id, managerId, role: In(this.workerRoles) },
     });
 
     if (!staff) {
@@ -206,7 +225,7 @@ export class UsersService {
    */
   async deactivateStaff(id: string, managerId: string): Promise<User> {
     const staff = await this.userRepository.findOne({
-      where: { id, managerId, role: UserRole.STAFF },
+      where: { id, managerId, role: In(this.workerRoles) },
     });
 
     if (!staff) {
@@ -224,7 +243,7 @@ export class UsersService {
    */
   async activateStaff(id: string, managerId: string): Promise<User> {
     const staff = await this.userRepository.findOne({
-      where: { id, managerId, role: UserRole.STAFF },
+      where: { id, managerId, role: In(this.workerRoles) },
     });
 
     if (!staff) {

@@ -19,6 +19,8 @@ export enum UserRole {
   OWNER = "owner",
   GENERAL_MANAGER = "general_manager",
   STAFF = "staff",
+  GUARD = "guard",
+  TENANT = "tenant",
 }
 
 @Entity("users")
@@ -75,7 +77,36 @@ export class User extends BaseEntity {
   resetOtp?: string | null;
 
   @Column({ name: "reset_otp_expires_at", type: "timestamp", nullable: true })
+  @Exclude()
   resetOtpExpiresAt?: Date | null;
+
+  @Column({ name: "email_verified_at", type: "timestamp", nullable: true })
+  emailVerifiedAt?: Date | null;
+
+  @Column({
+    name: "email_verification_otp",
+    type: "varchar",
+    length: 255,
+    nullable: true,
+  })
+  @Exclude()
+  emailVerificationOtp?: string | null;
+
+  @Column({
+    name: "email_verification_otp_expires_at",
+    type: "timestamp",
+    nullable: true,
+  })
+  @Exclude()
+  emailVerificationOtpExpiresAt?: Date | null;
+
+  @Column({
+    name: "email_verification_sent_at",
+    type: "timestamp",
+    nullable: true,
+  })
+  @Exclude()
+  emailVerificationSentAt?: Date | null;
 
   @Column({ name: "last_login_at", nullable: true })
   lastLoginAt?: Date;

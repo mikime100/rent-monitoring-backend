@@ -106,8 +106,8 @@ export class SyncService {
         tenants = [];
         payments = [];
       }
-    } else {
-      // Staff gets assigned properties and related data
+    } else if (userRole === UserRole.STAFF || userRole === UserRole.GUARD) {
+      // Staff/guard get assigned properties and related data
       properties = await this.propertyRepository
         .createQueryBuilder("property")
         .innerJoin(
@@ -135,6 +135,10 @@ export class SyncService {
       } else {
         payments = [];
       }
+    } else {
+      properties = [];
+      tenants = [];
+      payments = [];
     }
 
     return {
@@ -296,7 +300,9 @@ export class SyncService {
       const tenant = this.tenantRepository.create({
         ...data,
         assignedStaffId:
-          userRole === UserRole.STAFF ? userId : data.assignedStaffId,
+          userRole === UserRole.STAFF || userRole === UserRole.GUARD
+            ? userId
+            : data.assignedStaffId,
         syncStatus: SyncStatus.SYNCED,
         version: 1,
       });

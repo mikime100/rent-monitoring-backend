@@ -49,7 +49,12 @@ export class PropertiesController {
   }
 
   @Get()
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
+  @Roles(
+    UserRole.OWNER,
+    UserRole.GENERAL_MANAGER,
+    UserRole.STAFF,
+    UserRole.GUARD,
+  )
   @ApiOperation({ summary: "Get all properties" })
   async findAll(
     @Request() req: { user: AuthUser },
@@ -88,7 +93,12 @@ export class PropertiesController {
   }
 
   @Get(":id")
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
+  @Roles(
+    UserRole.OWNER,
+    UserRole.GENERAL_MANAGER,
+    UserRole.STAFF,
+    UserRole.GUARD,
+  )
   @ApiOperation({ summary: "Get property by ID" })
   async findById(@Param("id") id: string, @Request() req: { user: AuthUser }) {
     const property = await this.propertiesService.findById(

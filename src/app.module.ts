@@ -16,6 +16,10 @@ import { HealthModule } from "./modules/health/health.module";
 import { ComplaintsModule } from "./modules/complaints/complaints.module";
 import { TaxSchedulesModule } from "./modules/tax-schedules/tax-schedules.module";
 import { ReportsModule } from "./modules/reports/reports.module";
+import { TenantAccountsModule } from "./modules/tenant-accounts/tenant-accounts.module";
+import { TenantPortalModule } from "./modules/tenant-portal/tenant-portal.module";
+import { VisitorModule } from "./modules/visitor/visitor.module";
+import { RemindersModule } from "./modules/reminders/reminders.module";
 import configuration from "./config/configuration";
 
 @Module({
@@ -67,6 +71,10 @@ import configuration from "./config/configuration";
     ComplaintsModule,
     TaxSchedulesModule,
     ReportsModule,
+    TenantAccountsModule,
+    TenantPortalModule,
+    VisitorModule,
+    RemindersModule,
   ],
 })
 export class AppModule {}

@@ -9,7 +9,7 @@ import {
   ConflictException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import {
   Property,
   PropertyStatus,
@@ -103,7 +103,7 @@ export class PropertiesService {
       throw new ForbiddenException("Access denied");
     }
 
-    if (userRole === UserRole.STAFF) {
+    if (userRole === UserRole.STAFF || userRole === UserRole.GUARD) {
       const isAssigned = property.assignedStaff?.some((s) => s.id === userId);
       if (!isAssigned) {
         throw new ForbiddenException("Access denied");
@@ -180,7 +180,11 @@ export class PropertiesService {
     }
 
     const staffMember = await this.userRepository.findOne({
-      where: { id: staffId, managerId, role: UserRole.STAFF },
+      where: {
+        id: staffId,
+        managerId,
+        role: In([UserRole.STAFF, UserRole.GUARD]),
+      },
     });
 
     if (!staffMember) {

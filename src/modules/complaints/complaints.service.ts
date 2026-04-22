@@ -33,6 +33,10 @@ export class ComplaintsService {
     private readonly notificationsService: NotificationsService,
   ) {}
 
+  private isWorkerRole(role: UserRole): boolean {
+    return role === UserRole.STAFF || role === UserRole.GUARD;
+  }
+
   /**
    * Create a complaint (Staff or GM)
    */
@@ -55,7 +59,7 @@ export class ComplaintsService {
         throw new NotFoundException("Property not found");
       }
 
-      if (creator.role === UserRole.STAFF) {
+      if (this.isWorkerRole(creator.role)) {
         const hasAccess = property.assignedStaff?.some(
           (staffUser) => staffUser.id === creatorId,
         );
@@ -151,7 +155,7 @@ export class ComplaintsService {
    * Get all complaints - filtered by role
    */
   async findAll(userId: string, userRole: UserRole): Promise<Complaint[]> {
-    if (userRole === UserRole.STAFF) {
+    if (this.isWorkerRole(userRole)) {
       // Staff sees only their own complaints
       return this.complaintRepository.find({
         where: { staffId: userId },
@@ -225,7 +229,7 @@ export class ComplaintsService {
     }
 
     // Staff can only view their own complaints
-    if (userRole === UserRole.STAFF && complaint.staffId !== userId) {
+    if (this.isWorkerRole(userRole) && complaint.staffId !== userId) {
       throw new ForbiddenException("Access denied");
     }
 

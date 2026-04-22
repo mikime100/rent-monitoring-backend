@@ -62,7 +62,7 @@ const buildDueDate = (year: number, month: number, dueDay: number): Date => {
   return new Date(Date.UTC(year, month - 1, safeDay, 9, 0, 0, 0));
 };
 
-type UserRole = "owner" | "general_manager" | "staff";
+type UserRole = "owner" | "general_manager" | "staff" | "guard" | "tenant";
 
 type UserSeed = {
   key: string;
@@ -73,6 +73,7 @@ type UserSeed = {
   role: UserRole;
   phone: string;
   managerId?: string;
+  emailVerifiedAt?: string | null;
 };
 
 type PropertySeed = {
@@ -184,10 +185,11 @@ async function upsertUser(
       phone,
       is_active,
       manager_id,
+      email_verified_at,
       created_at,
       updated_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$9)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,$10)
     ON CONFLICT (email)
     DO UPDATE SET
       first_name = EXCLUDED.first_name,
@@ -197,6 +199,7 @@ async function upsertUser(
       phone = EXCLUDED.phone,
       is_active = EXCLUDED.is_active,
       manager_id = EXCLUDED.manager_id,
+      email_verified_at = EXCLUDED.email_verified_at,
       updated_at = EXCLUDED.updated_at
     RETURNING id`,
     [
@@ -208,6 +211,7 @@ async function upsertUser(
       user.role,
       user.phone,
       user.managerId ?? null,
+      user.emailVerifiedAt ?? null,
       nowIso,
     ],
   );
@@ -330,6 +334,89 @@ async function upsertTenant(
       tenant.assignedStaffId,
       nowIso,
     ],
+  );
+}
+
+type TenantAccountSeed = {
+  id: string;
+  userId: string;
+  tenantId: string;
+  propertyId: string;
+  unitNumber: string;
+};
+
+const normalizeUnitNumber = (value: string): string =>
+  value.trim().toLowerCase().replace(/\s+/g, " ");
+
+async function upsertTenantAccount(
+  qr: QueryRunner,
+  account: TenantAccountSeed,
+  nowIso: string,
+): Promise<string> {
+  const rows = await qr.query(
+    `INSERT INTO "tenant_accounts" (
+      id,
+      user_id,
+      tenant_id,
+      property_id,
+      unit_number,
+      unit_number_normalized,
+      is_active,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,true,$7,$7)
+    ON CONFLICT (tenant_id)
+    DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      property_id = EXCLUDED.property_id,
+      unit_number = EXCLUDED.unit_number,
+      unit_number_normalized = EXCLUDED.unit_number_normalized,
+      is_active = EXCLUDED.is_active,
+      updated_at = EXCLUDED.updated_at
+    RETURNING id`,
+    [
+      account.id,
+      account.userId,
+      account.tenantId,
+      account.propertyId,
+      account.unitNumber,
+      normalizeUnitNumber(account.unitNumber),
+      nowIso,
+    ],
+  );
+
+  return rows[0]?.id;
+}
+
+async function upsertTenantReminderPreference(
+  qr: QueryRunner,
+  preferenceId: string,
+  tenantAccountId: string,
+  nowIso: string,
+): Promise<void> {
+  await qr.query(
+    `INSERT INTO "tenant_reminder_preferences" (
+      id,
+      tenant_account_id,
+      push_enabled,
+      email_enabled,
+      due_day_enabled,
+      before_due_days,
+      after_due_days,
+      created_at,
+      updated_at
+    )
+    VALUES ($1,$2,true,true,true,$3,$4,$5,$5)
+    ON CONFLICT (tenant_account_id)
+    DO UPDATE SET
+      push_enabled = EXCLUDED.push_enabled,
+      email_enabled = EXCLUDED.email_enabled,
+      due_day_enabled = EXCLUDED.due_day_enabled,
+      before_due_days = EXCLUDED.before_due_days,
+      after_due_days = EXCLUDED.after_due_days,
+      updated_at = EXCLUDED.updated_at`,
+    [preferenceId, tenantAccountId, [7, 3, 1], [3, 7], nowIso],
   );
 }
 
@@ -515,13 +602,21 @@ async function upsertTaxSchedule(
 }
 
 function nextMonthlyDueDate(now: Date, dueDay: number): string {
-  const candidate = buildDueDate(now.getUTCFullYear(), now.getUTCMonth() + 1, dueDay);
+  const candidate = buildDueDate(
+    now.getUTCFullYear(),
+    now.getUTCMonth() + 1,
+    dueDay,
+  );
   if (candidate >= now) {
     return toIsoDate(candidate);
   }
 
-  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return toIsoDate(buildDueDate(next.getUTCFullYear(), next.getUTCMonth() + 1, dueDay));
+  const next = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+  );
+  return toIsoDate(
+    buildDueDate(next.getUTCFullYear(), next.getUTCMonth() + 1, dueDay),
+  );
 }
 
 function nextQuarterlyDueDate(now: Date): string {
@@ -614,6 +709,21 @@ async function seed() {
       nowIso,
     );
 
+    const guardSamuelId = await upsertUser(
+      qr,
+      {
+        key: "guard-samuel",
+        email: "guard@rentapp.com",
+        firstName: "Samuel",
+        lastName: "Kariuki",
+        password: "Guard@1234",
+        role: "guard",
+        phone: "+254-700-000004",
+        managerId: gmId,
+      },
+      nowIso,
+    );
+
     const properties: PropertySeed[] = [
       {
         id: stableId("property", "sunset-apartments"),
@@ -651,9 +761,13 @@ async function seed() {
     }
 
     console.log("[seed] Ensuring property staff assignments...");
-    const propertyStaffAssignments: Array<{ propertyId: string; staffId: string }> = [
+    const propertyStaffAssignments: Array<{
+      propertyId: string;
+      staffId: string;
+    }> = [
       { propertyId: properties[0].id, staffId: staffAliceId },
       { propertyId: properties[0].id, staffId: staffBobId },
+      { propertyId: properties[0].id, staffId: guardSamuelId },
       { propertyId: properties[1].id, staffId: staffBobId },
     ];
 
@@ -778,7 +892,70 @@ async function seed() {
     const contractEndDate = `${currentYear + 2}-12-31`;
 
     for (const tenant of tenants) {
-      await upsertTenant(qr, tenant, contractStartDate, contractEndDate, nowIso);
+      await upsertTenant(
+        qr,
+        tenant,
+        contractStartDate,
+        contractEndDate,
+        nowIso,
+      );
+    }
+
+    console.log("[seed] Upserting tenant app accounts...");
+    const tenantPassword = "Tenant@1234";
+    const propertyNameById = new Map(
+      properties.map((property) => [property.id, property.name]),
+    );
+    const tenantLoginRows: Array<{
+      email: string;
+      password: string;
+      tenantName: string;
+      unitNumber: string;
+      propertyName: string;
+    }> = [];
+
+    for (const tenant of tenants) {
+      const tenantUserId = await upsertUser(
+        qr,
+        {
+          key: `tenant-user-${tenant.key}`,
+          email: tenant.email,
+          firstName: tenant.firstName,
+          lastName: tenant.lastName,
+          password: tenantPassword,
+          role: "tenant",
+          phone: tenant.phone,
+          emailVerifiedAt: nowIso,
+        },
+        nowIso,
+      );
+
+      const tenantAccountId = await upsertTenantAccount(
+        qr,
+        {
+          id: stableId("tenant-account", tenant.key),
+          userId: tenantUserId,
+          tenantId: tenant.id,
+          propertyId: tenant.propertyId,
+          unitNumber: tenant.unitNumber,
+        },
+        nowIso,
+      );
+
+      await upsertTenantReminderPreference(
+        qr,
+        stableId("tenant-reminder-preference", tenant.key),
+        tenantAccountId,
+        nowIso,
+      );
+
+      tenantLoginRows.push({
+        email: tenant.email,
+        password: tenantPassword,
+        tenantName: `${tenant.firstName} ${tenant.lastName}`,
+        unitNumber: tenant.unitNumber,
+        propertyName: propertyNameById.get(tenant.propertyId) || "Property",
+      });
     }
 
     console.log("[seed] Inserting realistic payment history...");
@@ -825,7 +1002,9 @@ async function seed() {
           paymentDate: paymentDate.toISOString(),
           dueDate: toIsoDate(dueDate),
           status: "paid",
-          paymentMethod: paymentMethods[(tenantIndex + offset) % paymentMethods.length] ?? "cash",
+          paymentMethod:
+            paymentMethods[(tenantIndex + offset) % paymentMethods.length] ??
+            "cash",
           receiptNumber: `RCP-${year}${pad2(month)}-${tenant.unitNumber}`,
           month,
           year,
@@ -851,7 +1030,9 @@ async function seed() {
 
       if (tenantIndex <= 2) {
         const paidDate = new Date(currentMonthDueDate);
-        paidDate.setUTCDate(Math.max(1, paidDate.getUTCDate() - (2 - tenantIndex)));
+        paidDate.setUTCDate(
+          Math.max(1, paidDate.getUTCDate() - (2 - tenantIndex)),
+        );
         paidDate.setUTCHours(11, 15, 0, 0);
 
         paymentRecords.push({
@@ -863,7 +1044,8 @@ async function seed() {
           paymentDate: paidDate.toISOString(),
           dueDate: toIsoDate(currentMonthDueDate),
           status: "paid",
-          paymentMethod: paymentMethods[tenantIndex % paymentMethods.length] ?? "cash",
+          paymentMethod:
+            paymentMethods[tenantIndex % paymentMethods.length] ?? "cash",
           receiptNumber: `RCP-${currentYear}${pad2(currentMonth)}-${tenant.unitNumber}`,
           month: currentMonth,
           year: currentYear,
@@ -947,7 +1129,11 @@ async function seed() {
     const longOverdueYear = longOverdueDate.getUTCFullYear();
 
     for (const tenant of [tenants[6], tenants[7]]) {
-      const dueDate = buildDueDate(longOverdueYear, longOverdueMonth, tenant!.rentDueDay);
+      const dueDate = buildDueDate(
+        longOverdueYear,
+        longOverdueMonth,
+        tenant!.rentDueDay,
+      );
 
       paymentRecords.push({
         id: stableId(
@@ -1077,8 +1263,7 @@ async function seed() {
       {
         key: "tenant-registered",
         title: "Tenant registered",
-        message:
-          "Amina Said was added to Unit 103 at Green Valley Complex.",
+        message: "Amina Said was added to Unit 103 at Green Valley Complex.",
         type: "tenant_registered",
         isRead: true,
         createdAt: hoursAgo(24),
@@ -1119,7 +1304,8 @@ async function seed() {
       {
         key: "complaint-response",
         title: "Complaint response",
-        message: "Your complaint 'Security light not working' has been resolved.",
+        message:
+          "Your complaint 'Security light not working' has been resolved.",
         type: "complaint_response",
         isRead: false,
         createdAt: hoursAgo(3),
@@ -1197,6 +1383,13 @@ async function seed() {
     console.log("  gm@rentapp.com / Manager@1234");
     console.log("  alice@rentapp.com / Staff@1234");
     console.log("  bob@rentapp.com / Staff@1234");
+    console.log("  guard@rentapp.com / Guard@1234");
+    console.log("  Tenant accounts (all use password Tenant@1234):");
+    for (const tenantLogin of tenantLoginRows) {
+      console.log(
+        `    ${tenantLogin.email} (${tenantLogin.tenantName}, Unit ${tenantLogin.unitNumber} - ${tenantLogin.propertyName})`,
+      );
+    }
     console.log("-------------------------------------------");
     console.log(`History months inserted target: ${HISTORY_MONTHS}`);
     console.log(`Payments inserted this run: ${insertedPayments}`);

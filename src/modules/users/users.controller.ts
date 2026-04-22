@@ -27,7 +27,7 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   /**
-   * Create new staff member (General Manager only)
+   * Create new staff/guard member (General Manager only)
    */
   @Post("staff")
   @Roles(UserRole.GENERAL_MANAGER)
@@ -36,7 +36,7 @@ export class UsersController {
   }
 
   /**
-   * Get all staff members (General Manager sees own, Owner sees all)
+   * Get all staff/guard members (General Manager sees own, Owner sees all)
    */
   @Get("staff")
   @Roles(UserRole.GENERAL_MANAGER, UserRole.OWNER)

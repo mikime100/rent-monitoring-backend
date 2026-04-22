@@ -36,7 +36,7 @@ export class ComplaintsController {
    * POST /complaints - Staff or GM submits a complaint
    */
   @Post()
-  @Roles(UserRole.STAFF, UserRole.GENERAL_MANAGER)
+  @Roles(UserRole.STAFF, UserRole.GUARD, UserRole.GENERAL_MANAGER)
   async create(
     @Body() dto: CreateComplaintDto,
     @Request() req: { user: AuthUser },
@@ -48,7 +48,12 @@ export class ComplaintsController {
    * GET /complaints - Get all complaints (filtered by role)
    */
   @Get()
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
+  @Roles(
+    UserRole.OWNER,
+    UserRole.GENERAL_MANAGER,
+    UserRole.STAFF,
+    UserRole.GUARD,
+  )
   async findAll(@Request() req: { user: AuthUser }) {
     return this.complaintsService.findAll(req.user.sub, req.user.role);
   }
@@ -82,7 +87,12 @@ export class ComplaintsController {
    * GET /complaints/:id - Get complaint by ID
    */
   @Get(":id")
-  @Roles(UserRole.OWNER, UserRole.GENERAL_MANAGER, UserRole.STAFF)
+  @Roles(
+    UserRole.OWNER,
+    UserRole.GENERAL_MANAGER,
+    UserRole.STAFF,
+    UserRole.GUARD,
+  )
   async findById(@Param("id") id: string, @Request() req: { user: AuthUser }) {
     return this.complaintsService.findById(id, req.user.sub, req.user.role);
   }
