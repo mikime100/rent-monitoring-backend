@@ -23,9 +23,22 @@ import {
   VisitorVerificationAction,
   VisitorVerificationChannel,
 } from "../../entities";
+import { CreateVisitorInviteDto } from "./dto/create-visitor-invite.dto";
 import { CreateVisitorInviteLinkDto } from "./dto/create-visitor-invite-link.dto";
 import { CreateVisitorPassDto } from "./dto/create-visitor-pass.dto";
+import { VerifyVisitorCodeDto } from "./dto/verify-visitor-code.dto";
 import { VerifyVisitorPassDto } from "./dto/verify-visitor-pass.dto";
+
+type VerificationAttemptMeta = {
+  channel?: VisitorVerificationChannel;
+  notes?: string;
+};
+
+type VerificationResult = {
+  verified: boolean;
+  pass: VisitorPass | null;
+  message: string;
+};
 
 @Injectable()
 export class VisitorService {
@@ -123,6 +136,88 @@ export class VisitorService {
     }
   }
 
+  private async sendVisitorCodeSms(
+    phone: string,
+    code: string,
+    visitorName: string,
+  ): Promise<void> {
+    const accountSid = this.configService.get<string>("TWILIO_ACCOUNT_SID");
+    const authToken = this.configService.get<string>("TWILIO_AUTH_TOKEN");
+    const fromNumber = this.configService.get<string>("TWILIO_FROM_NUMBER");
+
+    if (!accountSid || !authToken || !fromNumber) {
+      console.log(`\n========================================`);
+      console.log(`  VISITOR CODE SMS for ${phone}`);
+      console.log(`  Visitor: ${visitorName}`);
+      console.log(`  Code: ${code}`);
+      console.log(`========================================\n`);
+      return;
+    }
+
+    try {
+      const body = new URLSearchParams({
+        To: phone,
+        From: fromNumber,
+        Body: `Rent access code for ${visitorName}: ${code}. This code expires in 24 hours.`,
+      });
+
+      const auth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+
+      const response = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body,
+        },
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Twilio SMS failed: ${errorText}`);
+      }
+    } catch (error) {
+      console.error("Failed to send visitor code SMS:", error);
+      console.log(`VISITOR CODE for ${phone}: ${code}`);
+    }
+  }
+
+  async createInvite(
+    userId: string,
+    dto: CreateVisitorInviteDto,
+  ): Promise<{
+    pass: VisitorPass;
+    verificationCode: string;
+    delivery: {
+      smsRequested: boolean;
+      emailRequested: boolean;
+      manualShareAvailable: true;
+    };
+  }> {
+    const { link } = await this.createInviteLink(userId, {
+      expiresAt: dto.expiresAt,
+    });
+
+    const created = await this.createPass(userId, link.id, {
+      visitorName: dto.visitorName,
+      visitorPhone: dto.visitorPhone,
+      visitorEmail: dto.visitorEmail,
+    });
+
+    return {
+      pass: created.pass,
+      verificationCode: created.verificationCode,
+      delivery: {
+        smsRequested: true,
+        emailRequested: Boolean(dto.visitorEmail),
+        manualShareAvailable: true,
+      },
+    };
+  }
+
   async createInviteLink(
     userId: string,
     dto: CreateVisitorInviteLinkDto,
@@ -204,13 +299,88 @@ export class VisitorService {
       await this.sendVisitorCodeEmail(dto.visitorEmail, code, dto.visitorName);
     }
 
+    if (dto.visitorPhone) {
+      await this.sendVisitorCodeSms(dto.visitorPhone, code, dto.visitorName);
+    }
+
     return { pass: saved, verificationCode: code };
+  }
+
+  async verifyByCode(
+    guardUserId: string,
+    dto: VerifyVisitorCodeDto,
+  ): Promise<VerificationResult> {
+    const candidates = await this.visitorPassRepository.find({
+      where: [
+        { status: VisitorPassStatus.PENDING },
+        { status: VisitorPassStatus.VERIFIED },
+      ],
+      order: { createdAt: "DESC" },
+      take: 200,
+    });
+
+    const now = new Date();
+
+    for (const candidate of candidates) {
+      if (
+        candidate.status === VisitorPassStatus.PENDING &&
+        now > candidate.verificationCodeExpiresAt
+      ) {
+        candidate.status = VisitorPassStatus.EXPIRED;
+        await this.visitorPassRepository.save(candidate);
+        continue;
+      }
+
+      const isMatch = await bcrypt.compare(dto.code, candidate.verificationCodeHash);
+      if (!isMatch) {
+        continue;
+      }
+
+      if (candidate.status === VisitorPassStatus.VERIFIED) {
+        await this.logAttempt(
+          candidate.id,
+          guardUserId,
+          dto,
+          VisitorVerificationAction.VERIFIED,
+        );
+
+        return {
+          verified: true,
+          pass: candidate,
+          message: `Invite is valid for ${candidate.visitorName}.`,
+        };
+      }
+
+      candidate.status = VisitorPassStatus.VERIFIED;
+      candidate.usedAt = new Date();
+      candidate.verifiedById = guardUserId;
+
+      const saved = await this.visitorPassRepository.save(candidate);
+      await this.logAttempt(
+        saved.id,
+        guardUserId,
+        dto,
+        VisitorVerificationAction.VERIFIED,
+      );
+
+      return {
+        verified: true,
+        pass: saved,
+        message: `Invite is valid for ${saved.visitorName}.`,
+      };
+    }
+
+    return {
+      verified: false,
+      pass: null,
+      message: "Invalid or expired code.",
+    };
   }
 
   async verifyPass(
     guardUserId: string,
     dto: VerifyVisitorPassDto,
-  ): Promise<{ verified: boolean; pass: VisitorPass | null }> {
+  ): Promise<VerificationResult> {
     const pass = await this.visitorPassRepository.findOne({
       where: { id: dto.passId },
     });
@@ -230,7 +400,11 @@ export class VisitorService {
         dto,
         VisitorVerificationAction.DENIED,
       );
-      return { verified: false, pass };
+      return {
+        verified: false,
+        pass,
+        message: "Invite has expired.",
+      };
     }
 
     if (new Date() > pass.verificationCodeExpiresAt) {
@@ -242,7 +416,11 @@ export class VisitorService {
         dto,
         VisitorVerificationAction.DENIED,
       );
-      return { verified: false, pass };
+      return {
+        verified: false,
+        pass,
+        message: "Invite has expired.",
+      };
     }
 
     if (pass.status === VisitorPassStatus.VERIFIED) {
@@ -252,7 +430,11 @@ export class VisitorService {
         dto,
         VisitorVerificationAction.VERIFIED,
       );
-      return { verified: true, pass };
+      return {
+        verified: true,
+        pass,
+        message: `Invite is valid for ${pass.visitorName}.`,
+      };
     }
 
     const isValid = await bcrypt.compare(dto.code, pass.verificationCodeHash);
@@ -263,7 +445,11 @@ export class VisitorService {
         dto,
         VisitorVerificationAction.DENIED,
       );
-      return { verified: false, pass };
+      return {
+        verified: false,
+        pass,
+        message: "Code does not match this invite.",
+      };
     }
 
     pass.status = VisitorPassStatus.VERIFIED;
@@ -278,13 +464,17 @@ export class VisitorService {
       VisitorVerificationAction.VERIFIED,
     );
 
-    return { verified: true, pass: saved };
+    return {
+      verified: true,
+      pass: saved,
+      message: `Invite is valid for ${saved.visitorName}.`,
+    };
   }
 
   private async logAttempt(
     passId: string,
     guardUserId: string,
-    dto: VerifyVisitorPassDto,
+    dto: VerificationAttemptMeta,
     action: VisitorVerificationAction,
   ): Promise<void> {
     const log = this.visitorLogRepository.create({
