@@ -88,15 +88,24 @@ async function shouldBootstrapEmptyDatabase(
           FROM information_schema.tables
           WHERE table_schema = 'public' AND table_name = 'users'
         ) AS has_users,
-        EXISTS (
-          SELECT 1
-          FROM information_schema.tables
-          WHERE table_schema = 'public' AND table_name = 'migrations'
-        ) AS has_migrations;
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'migrations'
+          ) THEN (SELECT COUNT(*)::int FROM public.migrations)
+          ELSE 0
+        END AS applied_migrations;
     `);
 
     const row = result.rows?.[0];
-    return row ? !row.has_users && !row.has_migrations : false;
+    if (!row) {
+      return false;
+    }
+
+    const hasUsers = row.has_users === true;
+    const appliedMigrations = Number(row.applied_migrations ?? 0);
+    return !hasUsers && appliedMigrations === 0;
   } catch {
     return false;
   } finally {
