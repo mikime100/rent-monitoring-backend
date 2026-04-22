@@ -42,8 +42,12 @@ services:
         fromDatabase:
           name: rent-monitoring-db
           property: database
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rent-monitoring-db
+          property: connectionString
       - key: DB_SYNCHRONIZE
-        value: "true"
+        value: "false"
       - key: DB_LOGGING
         value: "false"
       - key: DB_SSL

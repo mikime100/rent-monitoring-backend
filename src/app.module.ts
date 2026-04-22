@@ -35,6 +35,7 @@ import configuration from "./config/configuration";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
+        const dbUrl = configService.get<string>("database.url");
         const useSsl = configService.get<boolean>("database.ssl");
         const rejectUnauthorized =
           configService.get<boolean>("database.sslRejectUnauthorized") !==
@@ -42,11 +43,22 @@ import configuration from "./config/configuration";
 
         return {
           type: "postgres",
-          host: configService.get<string>("database.host"),
-          port: configService.get<number>("database.port"),
-          username: configService.get<string>("database.username"),
-          password: configService.get<string>("database.password"),
-          database: configService.get<string>("database.name"),
+          url: dbUrl || undefined,
+          host: dbUrl
+            ? undefined
+            : configService.get<string>("database.host"),
+          port: dbUrl
+            ? undefined
+            : configService.get<number>("database.port"),
+          username: dbUrl
+            ? undefined
+            : configService.get<string>("database.username"),
+          password: dbUrl
+            ? undefined
+            : configService.get<string>("database.password"),
+          database: dbUrl
+            ? undefined
+            : configService.get<string>("database.name"),
           entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
           migrations: [__dirname + "/migrations/*{.ts,.js}"],
           synchronize: configService.get<boolean>("database.synchronize"),
