@@ -31,6 +31,16 @@ const RENDER_DB_REGIONS = [
   "singapore",
 ];
 
+interface BootstrapCheckConfig {
+  connectionString?: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  database?: string;
+  ssl: false | { rejectUnauthorized: boolean };
+}
+
 async function resolveRenderDbHost(host: string): Promise<string> {
   if (!host || host.includes(".")) {
     return host;
@@ -61,6 +71,41 @@ async function resolveRenderDbHost(host: string): Promise<string> {
   return host;
 }
 
+async function shouldBootstrapEmptyDatabase(
+  config: BootstrapCheckConfig,
+): Promise<boolean> {
+  let client: any = null;
+
+  try {
+    const { Client } = require("pg") as { Client: new (cfg: any) => any };
+    client = new Client(config);
+    await client.connect();
+
+    const result = await client.query(`
+      SELECT
+        EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'users'
+        ) AS has_users,
+        EXISTS (
+          SELECT 1
+          FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'migrations'
+        ) AS has_migrations;
+    `);
+
+    const row = result.rows?.[0];
+    return row ? !row.has_users && !row.has_migrations : false;
+  } catch {
+    return false;
+  } finally {
+    if (client) {
+      await client.end().catch(() => undefined);
+    }
+  }
+}
+
 @Module({
   imports: [
     // Configuration
@@ -83,31 +128,57 @@ async function resolveRenderDbHost(host: string): Promise<string> {
         const resolvedHost = dbUrl
           ? undefined
           : await resolveRenderDbHost(rawHost);
+        const port = dbUrl
+          ? undefined
+          : configService.get<number>("database.port");
+        const username = dbUrl
+          ? undefined
+          : configService.get<string>("database.username");
+        const password = dbUrl
+          ? undefined
+          : configService.get<string>("database.password");
+        const database = dbUrl
+          ? undefined
+          : configService.get<string>("database.name");
+        const ssl = useSsl ? { rejectUnauthorized } : false;
+
+        let synchronize = configService.get<boolean>("database.synchronize");
+        let migrationsRun = synchronize ? false : true;
+
+        if (!synchronize) {
+          const bootstrapRequired = await shouldBootstrapEmptyDatabase({
+            connectionString: dbUrl || undefined,
+            host: resolvedHost,
+            port,
+            user: username,
+            password,
+            database,
+            ssl,
+          });
+
+          if (bootstrapRequired) {
+            synchronize = true;
+            migrationsRun = false;
+            console.log(
+              "[bootstrap] Empty database detected. Using synchronize for initial schema creation.",
+            );
+          }
+        }
 
         return {
           type: "postgres",
           url: dbUrl || undefined,
           host: resolvedHost,
-          port: dbUrl
-            ? undefined
-            : configService.get<number>("database.port"),
-          username: dbUrl
-            ? undefined
-            : configService.get<string>("database.username"),
-          password: dbUrl
-            ? undefined
-            : configService.get<string>("database.password"),
-          database: dbUrl
-            ? undefined
-            : configService.get<string>("database.name"),
+          port,
+          username,
+          password,
+          database,
           entities: [__dirname + "/entities/**/*.entity{.ts,.js}"],
           migrations: [__dirname + "/migrations/*{.ts,.js}"],
-          synchronize: configService.get<boolean>("database.synchronize"),
-          migrationsRun: configService.get<boolean>("database.synchronize")
-            ? false
-            : true, // Auto-run migrations when synchronize is off (production)
+          synchronize,
+          migrationsRun,
           logging: configService.get<boolean>("database.logging"),
-          ssl: useSsl ? { rejectUnauthorized } : false,
+          ssl,
         };
       },
     }),
